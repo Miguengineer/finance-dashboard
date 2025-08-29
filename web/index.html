@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home Finance Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Firebase App (modular v10) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, serverTimestamp, getDocs } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import { firebaseConfig } from "./firebase-config.js"; // <-- fill this in (see README)
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // UI elements
+    const loginView = document.getElementById("login-view");
+    const dashboardView = document.getElementById("dashboard-view");
+    const emailEl = document.getElementById("email");
+    const passEl = document.getElementById("password");
+    const loginBtn = document.getElementById("login-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+
+    const form = document.getElementById("tx-form");
+    const txTableBody = document.getElementById("tx-tbody");
+    const monthSelect = document.getElementById("month-select");
+    const totalEl = document.getElementById("total");
+    const incomeEl = document.getElementById("income");
+    const expenseEl = document.getElementById("expense");
+
+    const catChartCanvas = document.getElementById("catChart");
+
+    let unsubscribe = null;
+    let catChart = null;
+    let currentUser = null;
+
+    function monthKeyFromDate(d) {
+      const dt = new Date(d);
+      return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2, "0")}`;
+    }
+
+    // Populate month filter with last/next few months
+    function populateMonthSelect() {
+      monthSelect.innerHTML = "";
+      const now = new Date();
+      for (let i = -3; i <= 3; i++) {
+        const dt = new Date(now.getFullYear(), now.getMonth() + i, 1);
+        const key = monthKeyFromDate(dt);
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = key;
+        if (i === 0) opt.selected = true;
+        monthSelect.appendChild(opt);
+      }
+    }
+    populateMonthSelect();
+
+    loginBtn.addEventListener("click", async () => {
+      const email = emailEl.value.trim();
+      const password = passEl.value.trim();
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      try { await signOut(auth); } catch (e) { alert(e.message); }
+    });
+
+    function show(view) {
+      loginView.style.display = view === "login" ? "block" : "none";
+      dashboardView.style.display = view === "dashboard" ? "block" : "none";
+    }
+
+    async function subscribeToTransactions() {
+      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      const selectedMonth = monthSelect.value;
+      const txCol = collection(db, "transactions");
+      const q1 = query(txCol, where("uid", "==", currentUser.uid), where("month", "==", selectedMonth), orderBy("date"));
+      unsubscribe = onSnapshot(q1, (snap) => {
+        const rows = [];
+        let income = 0, expense = 0;
+        const catAgg = {};
+        snap.forEach(doc => {
+          const t = doc.data();
+          rows.push(t);
+          const amt = Number(t.amount) || 0;
+          if (amt >= 0) income += amt; else expense += Math.abs(amt);
+          const cat = t.category || "Uncategorized";
+          catAgg[cat] = (catAgg[cat] || 0) + Math.abs(amt);
+        });
+        renderTable(rows);
+        incomeEl.textContent = income.toFixed(0);
+        expenseEl.textContent = expense.toFixed(0);
+        totalEl.textContent = (income - expense).toFixed(0);
+        drawCatChart(catAgg);
+      });
+    }
+
+    function renderTable(rows) {
+      txTableBody.innerHTML = "";
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = \`
+          <td>\${r.date?.toDate?.() ? r.date.toDate().toISOString().slice(0,10) : (r.date || "")}</td>
+          <td>\${r.payee || ""}</td>
+          <td>\${r.category || ""}</td>
+          <td class="\${Number(r.amount) < 0 ? 'neg' : 'pos'}">\${Number(r.amount).toFixed(0)}</td>
+          <td>\${r.account || ""}</td>
+          <td>\${r.payer || ""}</td>
+          <td>\${r.notes || ""}</td>
+        \`;
+        txTableBody.appendChild(tr);
+      }
+    }
+
+    function drawCatChart(catAgg) {
+      const labels = Object.keys(catAgg);
+      const data = Object.values(catAgg);
+      if (catChart) { catChart.destroy(); }
+      catChart = new Chart(catChartCanvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Spend by Category', data }] },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+    }
+
+    monthSelect.addEventListener("change", () => {
+      subscribeToTransactions();
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const dateStr = fd.get("date");
+      const amount = Number(fd.get("amount"));
+      const tx = {
+        uid: currentUser.uid,
+        date: new Date(dateStr),
+        month: dateStr.slice(0,7),
+        amount,
+        category: fd.get("category") || "Uncategorized",
+        payee: fd.get("payee") || "",
+        payer: fd.get("payer") || "",
+        account: fd.get("account") || "",
+        notes: fd.get("notes") || "",
+        createdAt: serverTimestamp()
+      };
+      try {
+        await addDoc(collection(db, "transactions"), tx);
+        form.reset();
+        // Reset date to today
+        document.getElementById("date").valueAsDate = new Date();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+    onAuthStateChanged(auth, (user) => {
+      currentUser = user;
+      if (!user) {
+        show("login");
+        return;
+      }
+      show("dashboard");
+      document.getElementById("date").valueAsDate = new Date();
+      subscribeToTransactions();
+    });
+  </script>
+</head>
+<body>
+  <div id="login-view" class="container" style="display:none">
+    <h1>Finanzas Familiares</h1>
+    <div class="card">
+      <h2>Acceder</h2>
+      <label>Email <input id="email" type="email" placeholder="you@example.com"/></label>
+      <label>Password <input id="password" type="password" placeholder="••••••••"/></label>
+      <button id="login-btn">Login</button>
+      <p class="hint">Solo usuarios autorizados. Tus datos están protegidos por reglas de Firestore.</p>
+    </div>
+  </div>
+
+  <div id="dashboard-view" class="container" style="display:none">
+    <div class="topbar">
+      <h1>Home Finance Dashboard</h1>
+      <div class="topbar-right">
+        <label>Mes
+          <select id="month-select"></select>
+        </label>
+        <button id="logout-btn">Logout</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Resumen del Mes</h3>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-label">Ingresos</div><div id="income" class="kpi-value">0</div></div>
+          <div class="kpi"><div class="kpi-label">Gastos</div><div id="expense" class="kpi-value">0</div></div>
+          <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">0</div></div>
+        </div>
+        <canvas id="catChart" height="120"></canvas>
+      </div>
+
+      <div class="card">
+        <h3>Agregar Movimiento</h3>
+        <form id="tx-form" class="form">
+          <label>Fecha <input type="date" id="date" name="date" required></label>
+          <label>Monto (positivo = ingreso; negativo = gasto) <input type="number" step="1" name="amount" required></label>
+          <label>Categoría <input type="text" name="category" placeholder="Food, Rent, etc."></label>
+          <label>Payee/Descripción <input type="text" name="payee"></label>
+          <label>Payer (quién pagó) <input type="text" name="payer"></label>
+          <label>Cuenta/Tarjeta <input type="text" name="account"></label>
+          <label>Notas <input type="text" name="notes"></label>
+          <button type="submit">Guardar</button>
+        </form>
+      </div>
+
+      <div class="card wide">
+        <h3>Transacciones</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Payer</th><th>Notas</th>
+              </tr>
+            </thead>
+            <tbody id="tx-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
