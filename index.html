@@ -108,15 +108,15 @@
       txTableBody.innerHTML = "";
       for (const r of rows) {
         const tr = document.createElement("tr");
-        tr.innerHTML = \`
-          <td>\${r.date?.toDate?.() ? r.date.toDate().toISOString().slice(0,10) : (r.date || "")}</td>
-          <td>\${r.payee || ""}</td>
-          <td>\${r.category || ""}</td>
-          <td class="\${Number(r.amount) < 0 ? 'neg' : 'pos'}">\${Number(r.amount).toFixed(0)}</td>
-          <td>\${r.account || ""}</td>
-          <td>\${r.payer || ""}</td>
-          <td>\${r.notes || ""}</td>
-        \`;
+        tr.innerHTML = `
+          <td>${r.date?.toDate?.() ? r.date.toDate().toISOString().slice(0,10) : (r.date || "")}</td>
+          <td>${r.payee || ""}</td>
+          <td>${r.category || ""}</td>
+          <td class="${Number(r.amount) < 0 ? 'neg' : 'pos'}">${Number(r.amount).toFixed(0)}</td>
+          <td>${r.account || ""}</td>
+          <td>${r.payer || ""}</td>
+          <td>${r.notes || ""}</td>
+        `;
         txTableBody.appendChild(tr);
       }
     }
