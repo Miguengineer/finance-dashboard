@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow only specific users to read/write their own data.
+    // Replace with your and your partner's emails.
+    function isAllowedUser() {
+      return request.auth != null &&
+        (request.auth.token.email in ['you@example.com','partner@example.com']);
+    }
+
+    match /transactions/{docId} {
+      allow read, list: if isAllowedUser() && request.auth.uid == resource.data.uid;
+      allow create: if isAllowedUser() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAllowedUser() && request.auth.uid == resource.data.uid;
+    }
+
+    // Optional: budgets, categories, etc, similarly constrained by uid
+    match /{document=**} {
+      allow read, write: if false; // default deny
+    }
+  }
+}
