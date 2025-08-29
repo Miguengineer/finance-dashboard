@@ -9,7 +9,7 @@
 //   appId: "1:1234567890:web:abcdefg"
 // };
 // Your web app's Firebase configuration
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyAhiGkgLk-h9yc93yChtMO7V7yaD4i9QEU",
   authDomain: "financedashboardjm.firebaseapp.com",
   projectId: "financedashboardjm",
