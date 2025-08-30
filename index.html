@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,10 +12,15 @@
     import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, serverTimestamp, doc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
     import { firebaseConfig } from "./firebase-config.js";
 
+    // ---- Config / constants ----
+    const CATEGORIES = ["Salud","Comida","Casa","Gatas"];
+    const PAYERS = ["Miguelito","Josefita"];
+
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
+    // ---- Elements ----
     const loginView = document.getElementById("login-view");
     const dashboardView = document.getElementById("dashboard-view");
     const emailEl = document.getElementById("email");
@@ -32,19 +37,51 @@
     const incomeEl = document.getElementById("income");
     const expenseEl = document.getElementById("expense");
     const catChartCanvas = document.getElementById("catChart");
+    const catSelect = document.getElementById("category");
+    const payerSelect = document.getElementById("payer");
 
     const installmentsToggle = document.getElementById("with-installments");
     const installmentsBox = document.getElementById("installments-box");
 
-    let unsubscribe = null;
+    // Permanentes
+    const permList = document.getElementById("perm-list");
+    const permName = document.getElementById("perm-name");
+    const permAmount = document.getElementById("perm-amount");
+    const permCategory = document.getElementById("perm-category");
+    const permPayer = document.getElementById("perm-payer");
+    const permAddBtn = document.getElementById("perm-add");
+
+    // Summary tables
+    const sumMigNo = document.getElementById("sum-mig-no");
+    const sumMigYes = document.getElementById("sum-mig-yes");
+    const sumMigMini = document.getElementById("sum-mig-mini");
+    const sumJosNo = document.getElementById("sum-jos-no");
+    const sumJosYes = document.getElementById("sum-jos-yes");
+    const sumJosMini = document.getElementById("sum-jos-mini");
+    const globalSummary = document.getElementById("global-summary");
+
+    let unsubscribeTx = null;
+    let unsubscribePerm = null;
     let catChart = null;
     let currentUser = null;
+    let currentTxRows = [];      // Firestore transactions of selected month
+    let currentPerms = [];       // Permanentes (all time; applied to every month)
 
+    // ---- Helpers ----
     function monthKeyFromDate(d) {
       const dt = new Date(d);
       return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2, "0")}`;
     }
     function addMonths(date, months) { const d = new Date(date); d.setMonth(d.getMonth() + months); return d; }
+    function firstDayOfMonthKey(key){ const [y,m]=key.split("-").map(Number); return new Date(y, m-1, 1); }
+    function fillSelect(select, options){
+      select.innerHTML = "";
+      options.forEach(v => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = v;
+        select.appendChild(o);
+      });
+    }
     function populateMonthSelect() {
       monthSelect.innerHTML = "";
       const now = new Date();
@@ -57,22 +94,14 @@
         monthSelect.appendChild(opt);
       }
     }
-    populateMonthSelect();
 
-    installmentsToggle.addEventListener("change", () => {
-      installmentsBox.style.display = installmentsToggle.checked ? "grid" : "none";
-    });
-
+    // ---- Auth ----
     loginBtn.addEventListener("click", async () => {
-      const email = emailEl.value.trim();
-      const password = passEl.value.trim();
-      try { await signInWithEmailAndPassword(auth, email, password); }
+      try { await signInWithEmailAndPassword(auth, emailEl.value.trim(), passEl.value.trim()); }
       catch (e) { alert(e.message); }
     });
     registerBtn.addEventListener("click", async () => {
-      const email = emailEl.value.trim();
-      const password = passEl.value.trim();
-      try { await createUserWithEmailAndPassword(auth, email, password); alert("User created & logged in."); }
+      try { await createUserWithEmailAndPassword(auth, emailEl.value.trim(), passEl.value.trim()); alert("Usuario creado y autenticado."); }
       catch (e) { alert(e.message); }
     });
     logoutBtn.addEventListener("click", async () => { try { await signOut(auth); } catch (e) { alert(e.message); } });
@@ -82,31 +111,52 @@
       dashboardView.style.display = view === "dashboard" ? "block" : "none";
     }
 
-    async function subscribeToTransactions() {
-      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    // ---- Firestore subscriptions ----
+    function subscribeToTransactions() {
+      if (!currentUser) return;
+      if (unsubscribeTx) { unsubscribeTx(); unsubscribeTx = null; }
       const selectedMonth = monthSelect.value;
       const txCol = collection(db, "transactions");
       const q1 = query(txCol, where("uid", "==", currentUser.uid), where("month", "==", selectedMonth), orderBy("date"));
-      unsubscribe = onSnapshot(q1, (snap) => {
-        const rows = [];
+      unsubscribeTx = onSnapshot(q1, (snap) => {
+        currentTxRows = [];
         let income = 0, expense = 0;
         const catAgg = {};
         snap.forEach(d => {
-          const t = d.data(); t._id = d.id; rows.push(t);
+          const t = d.data();
+          t._id = d.id;
+          currentTxRows.push(t);
           const amt = Number(t.amount) || 0;
           if (amt >= 0) income += amt; else expense += Math.abs(amt);
           const cat = t.category || "Uncategorized";
           catAgg[cat] = (catAgg[cat] || 0) + Math.abs(amt);
         });
-        renderTable(rows);
+        renderMainTable(currentTxRows);
+        renderChart(catAgg);
         incomeEl.textContent = income.toFixed(0);
         expenseEl.textContent = expense.toFixed(0);
         totalEl.textContent = (income - expense).toFixed(0);
-        drawCatChart(catAgg);
+        renderSummaries();
       });
     }
 
-    function renderTable(rows) {
+    function subscribeToPermanents() {
+      if (!currentUser) return;
+      if (unsubscribePerm) { unsubscribePerm(); unsubscribePerm = null; }
+      const permCol = collection(db, "permanents");
+      const q1 = query(permCol, where("uid","==", currentUser.uid), orderBy("name"));
+      unsubscribePerm = onSnapshot(q1, (snap) => {
+        currentPerms = [];
+        snap.forEach(d => {
+          const p = d.data(); p._id = d.id; currentPerms.push(p);
+        });
+        renderPermanents();
+        renderSummaries();
+      });
+    }
+
+    // ---- Renderers ----
+    function renderMainTable(rows) {
       txTableBody.innerHTML = "";
       for (const r of rows) {
         const tr = document.createElement("tr");
@@ -126,11 +176,13 @@
           </td>`;
         txTableBody.appendChild(tr);
       }
+      // row actions
       txTableBody.querySelectorAll("button[data-action='delete']").forEach(btn => {
         btn.addEventListener("click", async (e) => {
           const tr = e.target.closest("tr"); const id = tr.dataset.id;
-          if (!confirm("Delete this transaction?")) return;
-          try { await deleteDoc(doc(db, "transactions", id)); } catch (err) { alert(err.message); }
+          if (!confirm("¿Eliminar transacción?")) return;
+          try { await deleteDoc(doc(db, "transactions", id)); }
+          catch (err) { alert(err.message); }
         });
       });
       txTableBody.querySelectorAll("button[data-action='save']").forEach(btn => {
@@ -143,31 +195,197 @@
             if (f === "date") { const d = new Date(v); payload["date"] = d; payload["month"] = monthKeyFromDate(d); }
             else { payload[f] = v; }
           });
-          try { await updateDoc(doc(db, "transactions", id), payload); } catch (err) { alert(err.message); }
+          try { await updateDoc(doc(db, "transactions", id), payload); }
+          catch (err) { alert(err.message); }
         });
       });
     }
 
-    function drawCatChart(catAgg) {
-      const labels = Object.keys(catAgg); const data = Object.values(catAgg);
+    function renderChart(catAgg) {
+      const labels = Object.keys(catAgg);
+      const data = Object.values(catAgg);
       if (catChart) { catChart.destroy(); }
       catChart = new Chart(catChartCanvas, {
         type: 'bar',
-        data: { labels, datasets: [{ label: 'Spend by Category', data }] },
+        data: { labels, datasets: [{ label: 'Gasto por categoría', data }] },
         options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
       });
     }
 
-    monthSelect.addEventListener("change", () => { subscribeToTransactions(); });
+    function renderPermanents() {
+      // Grid of always-visible "knobs"
+      permList.innerHTML = "";
+      if (!currentPerms.length) {
+        const p = document.createElement("p");
+        p.className = "subtle";
+        p.textContent = "No hay gastos permanentes. Agrega uno abajo.";
+        permList.appendChild(p);
+        return;
+      }
+      const grid = document.createElement("div");
+      grid.className = "perms-grid";
+      currentPerms.forEach(p => {
+        const c = document.createElement("div");
+        c.className = "perm-card";
+        c.innerHTML = `
+          <div class="section-title">${p.name || "(Sin nombre)"} <span class="badge">Permanente</span></div>
+          <label>Monto (gasto, se aplica cada mes)
+            <input type="number" data-f="amount" value="${Math.abs(Number(p.amount)||0)}">
+          </label>
+          <label>Categoría
+            <select data-f="category"></select>
+          </label>
+          <label>Pagador
+            <select data-f="payer"></select>
+          </label>
+          <div class="row">
+            <button class="mini" data-action="save" data-id="${p._id}">Guardar</button>
+            <button class="mini danger" data-action="delete" data-id="${p._id}">Eliminar</button>
+          </div>
+        `;
+        const catSel = c.querySelector('select[data-f="category"]');
+        const paySel = c.querySelector('select[data-f="payer"]');
+        fillSelect(catSel, CATEGORIES);
+        fillSelect(paySel, PAYERS);
+        if (p.category) catSel.value = p.category;
+        if (p.payer) paySel.value = p.payer;
+        grid.appendChild(c);
+      });
+      permList.appendChild(grid);
 
+      // actions
+      permList.querySelectorAll("button[data-action='save']").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const root = btn.closest(".perm-card");
+          const amount = -Math.abs(Number(root.querySelector('input[data-f="amount"]').value||0)); // store negative
+          const category = root.querySelector('select[data-f="category"]').value;
+          const payer = root.querySelector('select[data-f="payer"]').value;
+          try { await updateDoc(doc(db, "permanents", id), { amount, category, payer }); }
+          catch (e) { alert(e.message); }
+        });
+      });
+      permList.querySelectorAll("button[data-action='delete']").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("¿Eliminar gasto permanente?")) return;
+          try { await deleteDoc(doc(db, "permanents", id)); }
+          catch (e) { alert(e.message); }
+        });
+      });
+    }
+
+    function renderSummaries() {
+      // Build per-payer buckets for selected month
+      const selKey = monthSelect.value;
+      const monthDate = firstDayOfMonthKey(selKey);
+
+      // Synthesize permanents as rows for this month (Sin cuotas)
+      const permRows = currentPerms.map(p => ({
+        ...p,
+        _synthetic: true,
+        date: monthDate,
+        month: selKey,
+        amount: Number(p.amount), // already negative
+        category: p.category || "Gatas",
+        payee: p.name || "Gasto Permanente",
+        account: p.account || "",
+        notes: "(permanente)",
+      }));
+
+      const allRows = [...currentTxRows]; // transactions only for main table
+      const rowsForSummary = [...currentTxRows, ...permRows];
+
+      const group = (rows, payer, withCuotas) =>
+        rows.filter(r => (r.payer===payer) && (!!r.installmentPlan === withCuotas));
+
+      const migNo = group(rowsForSummary, "Miguelito", false);
+      const migYes = group(rowsForSummary, "Miguelito", true);
+      const josNo = group(rowsForSummary, "Josefita", false);
+      const josYes = group(rowsForSummary, "Josefita", true);
+
+      renderSimpleTable(sumMigNo, migNo, "Miguelito · Sin cuotas (incluye permanentes)");
+      renderSimpleTable(sumMigYes, migYes, "Miguelito · Con cuotas");
+      renderMini(sumMigMini, migNo, migYes, "Miguelito");
+
+      renderSimpleTable(sumJosNo, josNo, "Josefita · Sin cuotas (incluye permanentes)");
+      renderSimpleTable(sumJosYes, josYes, "Josefita · Con cuotas");
+      renderMini(sumJosMini, josNo, josYes, "Josefita");
+
+      // Global
+      const tot = (arr) => arr.reduce((s,x)=>s+Number(x.amount||0),0);
+      const migTot = tot(migNo)+tot(migYes);
+      const josTot = tot(josNo)+tot(josYes);
+
+      const incomes = rowsForSummary.filter(r => Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
+      const expenses = rowsForSummary.filter(r => Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+      const balance = incomes - expenses;
+
+      globalSummary.innerHTML = `
+        <table>
+          <thead class="sticky-head"><tr><th>Resumen Global</th><th>Monto</th></tr></thead>
+          <tbody>
+            <tr><td>Ingresos (todos)</td><td class="pos">${incomes.toFixed(0)}</td></tr>
+            <tr><td>Gastos (incluye permanentes)</td><td class="neg">${expenses.toFixed(0)}</td></tr>
+            <tr><td><b>Balance</b></td><td><b>${balance.toFixed(0)}</b></td></tr>
+            <tr><td>Miguelito (total)</td><td>${migTot.toFixed(0)}</td></tr>
+            <tr><td>Josefita (total)</td><td>${josTot.toFixed(0)}</td></tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderSimpleTable(container, rows, title) {
+      const tot = rows.reduce((s,x)=>s+Number(x.amount||0),0);
+      container.innerHTML = `
+        <details open>
+          <summary>${title} — <span class="badge">Total: ${tot.toFixed(0)}</span></summary>
+          <div class="table-wrap">
+            <table>
+              <thead class="sticky-head"><tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Notas</th></tr></thead>
+              <tbody>
+                ${rows.map(r=>{
+                  const d = r.date?.toDate?.()? r.date.toDate(): (r.date instanceof Date? r.date : null);
+                  const ds = d? d.toISOString().slice(0,10) : "";
+                  const amt = Number(r.amount||0);
+                  return `<tr>
+                    <td>${ds}</td><td>${r.payee||""}</td><td>${r.category||""}</td>
+                    <td class="${amt<0?'neg':'pos'}">${amt.toFixed(0)}</td>
+                    <td>${r.account||""}</td><td>${r.notes||""}</td>
+                  </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+    }
+
+    function renderMini(container, noArr, yesArr, who) {
+      const sum = (xs)=>xs.reduce((s,x)=>s+Number(x.amount||0),0);
+      const no = sum(noArr), yes = sum(yesArr), all = no+yes;
+      container.innerHTML = `
+        <table>
+          <thead class="sticky-head"><tr><th>${who} · Resumen</th><th>Monto</th></tr></thead>
+          <tbody>
+            <tr><td>Sin cuotas (incl. permanentes)</td><td>${no.toFixed(0)}</td></tr>
+            <tr><td>Con cuotas</td><td>${yes.toFixed(0)}</td></tr>
+            <tr><td><b>Total</b></td><td><b>${all.toFixed(0)}</b></td></tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    // ---- Add transaction form ----
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
       const dateStr = fd.get("date");
       const baseAmount = Number(fd.get("amount"));
+
       const txCommon = {
         uid: currentUser.uid,
-        category: fd.get("category") || "Uncategorized",
+        category: fd.get("category") || "Gatas",
         payee: fd.get("payee") || "",
         payer: fd.get("payer") || "",
         account: fd.get("account") || "",
@@ -177,7 +395,7 @@
       try {
         if (document.getElementById("with-installments").checked) {
           const n = Number(fd.get("installments-count"));
-          if (!Number.isInteger(n) || n <= 0) throw new Error("Invalid installments count");
+          if (!Number.isInteger(n) || n <= 0) throw new Error("Número de cuotas inválido");
           const perMonth = Math.round(baseAmount / n);
           const startDate = new Date(dateStr);
           for (let i = 0; i < n; i++) {
@@ -197,18 +415,49 @@
       } catch (e2) { alert(e2.message); }
     });
 
+    // ---- Permanentes: add ----
+    permAddBtn.addEventListener("click", async () => {
+      const name = permName.value.trim();
+      const amt = Number(permAmount.value);
+      if (!name || isNaN(amt)) { alert("Nombre y monto requeridos"); return; }
+      try {
+        await addDoc(collection(db,"permanents"), {
+          uid: currentUser.uid,
+          name,
+          // store negative (expense)
+          amount: -Math.abs(amt),
+          category: permCategory.value || "Gatas",
+          payer: permPayer.value || "Miguelito",
+          createdAt: serverTimestamp()
+        });
+        permName.value = ""; permAmount.value = "";
+      } catch (e) { alert(e.message); }
+    });
+
+    // ---- Init ----
+    populateMonthSelect();
+    fillSelect(catSelect, CATEGORIES);
+    fillSelect(payerSelect, PAYERS);
+    fillSelect(permCategory, CATEGORIES);
+    fillSelect(permPayer, PAYERS);
+
+    monthSelect.addEventListener("change", () => { subscribeToTransactions(); renderSummaries(); });
+    installmentsToggle.addEventListener("change", () => { installmentsBox.style.display = installmentsToggle.checked ? "grid" : "none"; });
+
     onAuthStateChanged(auth, (user) => {
       currentUser = user;
       if (!user) { show("login"); return; }
       show("dashboard");
       document.getElementById("date").valueAsDate = new Date();
       subscribeToTransactions();
+      subscribeToPermanents();
     });
 
     if (!firebaseConfig || !firebaseConfig.projectId) { authHelp.style.display = "block"; }
   </script>
 </head>
 <body>
+  <!-- Login -->
   <div id="login-view" class="container" style="display:none">
     <h1>Finanzas Familiares</h1>
     <div class="card">
@@ -219,10 +468,11 @@
         <button id="login-btn">Login</button>
         <button id="register-btn" class="secondary">Register</button>
       </div>
-      <p id="auth-help" class="hint" style="display:none">If this renders blank after deploy, fill <code>firebase-config.js</code> and check GitHub Pages points to the folder with <code>index.html</code>.</p>
+      <p id="auth-help" class="hint" style="display:none">Si ves pantalla en blanco, completa <code>firebase-config.js</code> y verifica que GitHub Pages sirva la carpeta con <code>index.html</code>.</p>
     </div>
   </div>
 
+  <!-- Dashboard -->
   <div id="dashboard-view" class="container" style="display:none">
     <div class="topbar">
       <h1>Home Finance Dashboard</h1>
@@ -233,44 +483,97 @@
     </div>
 
     <div class="grid">
-      <div class="card">
-        <h3>Resumen del Mes</h3>
-        <div class="kpis">
-          <div class="kpi"><div class="kpi-label">Ingresos</div><div id="income" class="kpi-value">0</div></div>
-          <div class="kpi"><div class="kpi-label">Gastos</div><div id="expense" class="kpi-value">0</div></div>
-          <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">0</div></div>
-        </div>
-        <canvas id="catChart" height="120"></canvas>
-      </div>
-
-      <div class="card">
-        <h3>Agregar Movimiento</h3>
-        <form id="tx-form" class="form">
-          <label>Fecha <input type="date" id="date" name="date" required></label>
-          <label>Monto (positivo = ingreso; negativo = gasto) <input type="number" step="1" name="amount" required></label>
-          <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
-          <div id="installments-box" class="installments" style="display:none">
-            <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
-            <p class="hint">Se crearán N movimientos mensuales iguales a partir de la fecha indicada.</p>
+      <!-- Left column: KPIs + Transactions -->
+      <div class="grid-wide">
+        <div class="card">
+          <h3>Resumen del Mes</h3>
+          <div class="kpis">
+            <div class="kpi"><div class="kpi-label">Ingresos</div><div id="income" class="kpi-value">0</div></div>
+            <div class="kpi"><div class="kpi-label">Gastos</div><div id="expense" class="kpi-value">0</div></div>
+            <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">0</div></div>
           </div>
-          <label>Categoría <input type="text" name="category" placeholder="Food, Rent, etc."></label>
-          <label>Payee/Descripción <input type="text" name="payee"></label>
-          <label>Payer (quién pagó) <input type="text" name="payer"></label>
-          <label>Cuenta/Tarjeta <input type="text" name="account"></label>
-          <label>Notas <input type="text" name="notes"></label>
-          <button type="submit">Guardar</button>
-        </form>
+          <canvas id="catChart" height="120"></canvas>
+        </div>
+
+        <div class="card">
+          <h3>Agregar Movimiento</h3>
+          <form id="tx-form" class="form">
+            <div class="split">
+              <div>
+                <label>Fecha <input type="date" id="date" name="date" required></label>
+                <label>Monto (positivo = ingreso; negativo = gasto) <input type="number" step="1" name="amount" required></label>
+                <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
+                <div id="installments-box" class="installments" style="display:none">
+                  <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
+                  <p class="hint">Se crearán N movimientos mensuales iguales a partir de la fecha indicada.</p>
+                </div>
+              </div>
+              <div>
+                <label>Categoría
+                  <select id="category" name="category"></select>
+                </label>
+                <label>Payee/Descripción <input type="text" name="payee"></label>
+                <label>Pagador
+                  <select id="payer" name="payer"></select>
+                </label>
+                <label>Cuenta/Tarjeta <input type="text" name="account"></label>
+                <label>Notas <input type="text" name="notes"></label>
+              </div>
+            </div>
+            <button type="submit">Guardar</button>
+          </form>
+        </div>
+
+        <div class="card wide">
+          <h3>Transacciones (click para editar → Guardar)</h3>
+          <div class="table-wrap">
+            <table>
+              <thead class="sticky-head">
+                <tr>
+                  <th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Pagador</th><th>Notas</th><th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="tx-tbody"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
-      <div class="card wide">
-        <h3>Transacciones (click para editar → Save)</h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Payer</th><th>Notas</th><th>Acciones</th></tr>
-            </thead>
-            <tbody id="tx-tbody"></tbody>
-          </table>
+      <!-- Right column: Permanentes + Summaries -->
+      <div class="grid-wide">
+        <div class="card">
+          <h3>Gastos Permanentes</h3>
+          <div id="perm-list"></div>
+          <hr style="border:0;border-top:1px solid #eee;margin:12px 0">
+          <div class="row">
+            <label style="flex:1">Nombre <input type="text" id="perm-name" placeholder="Arriendo, Internet, etc."></label>
+            <label>Monto mensual (gasto) <input type="number" id="perm-amount" placeholder="ej. 350000"></label>
+            <label>Categoría <select id="perm-category"></select></label>
+            <label>Pagador <select id="perm-payer"></select></label>
+            <button id="perm-add">Agregar permanente</button>
+          </div>
+          <p class="hint">Los permanentes se aplican automáticamente al mes seleccionado (como gastos sin cuotas).</p>
+        </div>
+
+        <div class="card">
+          <h3>Resumen por persona</h3>
+          <div class="split">
+            <div>
+              <div id="sum-mig-no" class="details"></div>
+              <div id="sum-mig-yes" class="details" style="margin-top:12px"></div>
+              <div id="sum-mig-mini" style="margin-top:12px"></div>
+            </div>
+            <div>
+              <div id="sum-jos-no" class="details"></div>
+              <div id="sum-jos-yes" class="details" style="margin-top:12px"></div>
+              <div id="sum-jos-mini" style="margin-top:12px"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Resumen Global</h3>
+          <div id="global-summary"></div>
         </div>
       </div>
     </div>
