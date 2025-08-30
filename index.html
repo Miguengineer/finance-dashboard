@@ -5,26 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Home Finance Dashboard</title>
   <link rel="stylesheet" href="styles.css">
-  <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Firebase App (modular v10) -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-    import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, serverTimestamp, getDocs } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-    import { firebaseConfig } from "./firebase-config.js"; // <-- fill this in (see README)
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, serverTimestamp, doc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import { firebaseConfig } from "./firebase-config.js";
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    // UI elements
     const loginView = document.getElementById("login-view");
     const dashboardView = document.getElementById("dashboard-view");
     const emailEl = document.getElementById("email");
     const passEl = document.getElementById("password");
     const loginBtn = document.getElementById("login-btn");
+    const registerBtn = document.getElementById("register-btn");
     const logoutBtn = document.getElementById("logout-btn");
+    const authHelp = document.getElementById("auth-help");
 
     const form = document.getElementById("tx-form");
     const txTableBody = document.getElementById("tx-tbody");
@@ -32,8 +31,10 @@
     const totalEl = document.getElementById("total");
     const incomeEl = document.getElementById("income");
     const expenseEl = document.getElementById("expense");
-
     const catChartCanvas = document.getElementById("catChart");
+
+    const installmentsToggle = document.getElementById("with-installments");
+    const installmentsBox = document.getElementById("installments-box");
 
     let unsubscribe = null;
     let catChart = null;
@@ -43,36 +44,38 @@
       const dt = new Date(d);
       return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2, "0")}`;
     }
-
-    // Populate month filter with last/next few months
+    function addMonths(date, months) { const d = new Date(date); d.setMonth(d.getMonth() + months); return d; }
     function populateMonthSelect() {
       monthSelect.innerHTML = "";
       const now = new Date();
-      for (let i = -3; i <= 3; i++) {
+      for (let i = -6; i <= 6; i++) {
         const dt = new Date(now.getFullYear(), now.getMonth() + i, 1);
         const key = monthKeyFromDate(dt);
         const opt = document.createElement("option");
-        opt.value = key;
-        opt.textContent = key;
+        opt.value = key; opt.textContent = key;
         if (i === 0) opt.selected = true;
         monthSelect.appendChild(opt);
       }
     }
     populateMonthSelect();
 
+    installmentsToggle.addEventListener("change", () => {
+      installmentsBox.style.display = installmentsToggle.checked ? "grid" : "none";
+    });
+
     loginBtn.addEventListener("click", async () => {
       const email = emailEl.value.trim();
       const password = passEl.value.trim();
-      try {
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch (e) {
-        alert(e.message);
-      }
+      try { await signInWithEmailAndPassword(auth, email, password); }
+      catch (e) { alert(e.message); }
     });
-
-    logoutBtn.addEventListener("click", async () => {
-      try { await signOut(auth); } catch (e) { alert(e.message); }
+    registerBtn.addEventListener("click", async () => {
+      const email = emailEl.value.trim();
+      const password = passEl.value.trim();
+      try { await createUserWithEmailAndPassword(auth, email, password); alert("User created & logged in."); }
+      catch (e) { alert(e.message); }
     });
+    logoutBtn.addEventListener("click", async () => { try { await signOut(auth); } catch (e) { alert(e.message); } });
 
     function show(view) {
       loginView.style.display = view === "login" ? "block" : "none";
@@ -88,9 +91,8 @@
         const rows = [];
         let income = 0, expense = 0;
         const catAgg = {};
-        snap.forEach(doc => {
-          const t = doc.data();
-          rows.push(t);
+        snap.forEach(d => {
+          const t = d.data(); t._id = d.id; rows.push(t);
           const amt = Number(t.amount) || 0;
           if (amt >= 0) income += amt; else expense += Math.abs(amt);
           const cat = t.category || "Uncategorized";
@@ -108,48 +110,63 @@
       txTableBody.innerHTML = "";
       for (const r of rows) {
         const tr = document.createElement("tr");
+        tr.dataset.id = r._id;
+        const dateStr = r.date?.toDate?.() ? r.date.toDate().toISOString().slice(0,10) : (r.date || "");
         tr.innerHTML = `
-          <td>${r.date?.toDate?.() ? r.date.toDate().toISOString().slice(0,10) : (r.date || "")}</td>
-          <td>${r.payee || ""}</td>
-          <td>${r.category || ""}</td>
-          <td class="${Number(r.amount) < 0 ? 'neg' : 'pos'}">${Number(r.amount).toFixed(0)}</td>
-          <td>${r.account || ""}</td>
-          <td>${r.payer || ""}</td>
-          <td>${r.notes || ""}</td>
-        `;
+          <td contenteditable="true" data-field="date">${dateStr}</td>
+          <td contenteditable="true" data-field="payee">${r.payee || ""}</td>
+          <td contenteditable="true" data-field="category">${r.category || ""}</td>
+          <td contenteditable="true" data-field="amount" class="${Number(r.amount) < 0 ? 'neg' : 'pos'}">${Number(r.amount).toFixed(0)}</td>
+          <td contenteditable="true" data-field="account">${r.account || ""}</td>
+          <td contenteditable="true" data-field="payer">${r.payer || ""}</td>
+          <td contenteditable="true" data-field="notes">${r.notes || ""}</td>
+          <td>
+            <button class="mini danger" data-action="delete">Delete</button>
+            <button class="mini" data-action="save">Save</button>
+          </td>`;
         txTableBody.appendChild(tr);
       }
+      txTableBody.querySelectorAll("button[data-action='delete']").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const tr = e.target.closest("tr"); const id = tr.dataset.id;
+          if (!confirm("Delete this transaction?")) return;
+          try { await deleteDoc(doc(db, "transactions", id)); } catch (err) { alert(err.message); }
+        });
+      });
+      txTableBody.querySelectorAll("button[data-action='save']").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const tr = e.target.closest("tr"); const id = tr.dataset.id;
+          const payload = {};
+          tr.querySelectorAll("[data-field]").forEach(cell => {
+            const f = cell.dataset.field; let v = cell.textContent.trim();
+            if (f === "amount") v = Number(v);
+            if (f === "date") { const d = new Date(v); payload["date"] = d; payload["month"] = monthKeyFromDate(d); }
+            else { payload[f] = v; }
+          });
+          try { await updateDoc(doc(db, "transactions", id), payload); } catch (err) { alert(err.message); }
+        });
+      });
     }
 
     function drawCatChart(catAgg) {
-      const labels = Object.keys(catAgg);
-      const data = Object.values(catAgg);
+      const labels = Object.keys(catAgg); const data = Object.values(catAgg);
       if (catChart) { catChart.destroy(); }
       catChart = new Chart(catChartCanvas, {
         type: 'bar',
         data: { labels, datasets: [{ label: 'Spend by Category', data }] },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false } },
-          scales: { y: { beginAtZero: true } }
-        }
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
       });
     }
 
-    monthSelect.addEventListener("change", () => {
-      subscribeToTransactions();
-    });
+    monthSelect.addEventListener("change", () => { subscribeToTransactions(); });
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
       const dateStr = fd.get("date");
-      const amount = Number(fd.get("amount"));
-      const tx = {
+      const baseAmount = Number(fd.get("amount"));
+      const txCommon = {
         uid: currentUser.uid,
-        date: new Date(dateStr),
-        month: dateStr.slice(0,7),
-        amount,
         category: fd.get("category") || "Uncategorized",
         payee: fd.get("payee") || "",
         payer: fd.get("payer") || "",
@@ -158,36 +175,51 @@
         createdAt: serverTimestamp()
       };
       try {
-        await addDoc(collection(db, "transactions"), tx);
+        if (document.getElementById("with-installments").checked) {
+          const n = Number(fd.get("installments-count"));
+          if (!Number.isInteger(n) || n <= 0) throw new Error("Invalid installments count");
+          const perMonth = Math.round(baseAmount / n);
+          const startDate = new Date(dateStr);
+          for (let i = 0; i < n; i++) {
+            const d = addMonths(startDate, i);
+            const tx = { ...txCommon, date: d, month: monthKeyFromDate(d), amount: perMonth,
+              installmentPlan: { totalAmount: baseAmount, count: n, index: i+1, startDate: startDate } };
+            await addDoc(collection(db, "transactions"), tx);
+          }
+        } else {
+          const d = new Date(dateStr);
+          const tx = { ...txCommon, date: d, month: monthKeyFromDate(d), amount: baseAmount };
+          await addDoc(collection(db, "transactions"), tx);
+        }
         form.reset();
-        // Reset date to today
         document.getElementById("date").valueAsDate = new Date();
-      } catch (e) {
-        alert(e.message);
-      }
+        document.getElementById("installments-box").style.display = "none";
+      } catch (e2) { alert(e2.message); }
     });
 
     onAuthStateChanged(auth, (user) => {
       currentUser = user;
-      if (!user) {
-        show("login");
-        return;
-      }
+      if (!user) { show("login"); return; }
       show("dashboard");
       document.getElementById("date").valueAsDate = new Date();
       subscribeToTransactions();
     });
+
+    if (!firebaseConfig || !firebaseConfig.projectId) { authHelp.style.display = "block"; }
   </script>
 </head>
 <body>
   <div id="login-view" class="container" style="display:none">
     <h1>Finanzas Familiares</h1>
     <div class="card">
-      <h2>Acceder</h2>
-      <label>Email <input id="email" type="email" placeholder="you@example.com"/></label>
-      <label>Password <input id="password" type="password" placeholder="••••••••"/></label>
-      <button id="login-btn">Login</button>
-      <p class="hint">Solo usuarios autorizados. Tus datos están protegidos por reglas de Firestore.</p>
+      <h2>Acceso</h2>
+      <label>Email <input id="email" type="email" placeholder="you@example.com"></label>
+      <label>Password <input id="password" type="password" placeholder="••••••••"></label>
+      <div class="row">
+        <button id="login-btn">Login</button>
+        <button id="register-btn" class="secondary">Register</button>
+      </div>
+      <p id="auth-help" class="hint" style="display:none">If this renders blank after deploy, fill <code>firebase-config.js</code> and check GitHub Pages points to the folder with <code>index.html</code>.</p>
     </div>
   </div>
 
@@ -195,9 +227,7 @@
     <div class="topbar">
       <h1>Home Finance Dashboard</h1>
       <div class="topbar-right">
-        <label>Mes
-          <select id="month-select"></select>
-        </label>
+        <label>Mes <select id="month-select"></select></label>
         <button id="logout-btn">Logout</button>
       </div>
     </div>
@@ -218,6 +248,11 @@
         <form id="tx-form" class="form">
           <label>Fecha <input type="date" id="date" name="date" required></label>
           <label>Monto (positivo = ingreso; negativo = gasto) <input type="number" step="1" name="amount" required></label>
+          <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
+          <div id="installments-box" class="installments" style="display:none">
+            <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
+            <p class="hint">Se crearán N movimientos mensuales iguales a partir de la fecha indicada.</p>
+          </div>
           <label>Categoría <input type="text" name="category" placeholder="Food, Rent, etc."></label>
           <label>Payee/Descripción <input type="text" name="payee"></label>
           <label>Payer (quién pagó) <input type="text" name="payer"></label>
@@ -228,13 +263,11 @@
       </div>
 
       <div class="card wide">
-        <h3>Transacciones</h3>
+        <h3>Transacciones (click para editar → Save)</h3>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr>
-                <th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Payer</th><th>Notas</th>
-              </tr>
+              <tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Payer</th><th>Notas</th><th>Acciones</th></tr>
             </thead>
             <tbody id="tx-tbody"></tbody>
           </table>
