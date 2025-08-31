@@ -506,13 +506,14 @@ spendPie = new Chart(spendPieCanvas, {
       const savRowsMonth = savings.filter(s=>{
         const d=safeDate(s.date); return d && monthKeyFromDate(d)===selKey;
       });
+      const savAsExpense = savRowsMonth.filter(s=>Number(s.amount)>0).reduce((s,x)=>s+Number(x.amount),0);
+      const savAsIncome = savRowsMonth.filter(s=>Number(s.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
       const incomes = [...txRows, ...salRows].filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0) + savAsIncome;
       const expensesTx = txRows.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
       const expensesPerm = permRows.reduce((s,x)=>s+Math.abs(Number(x.amount||0)),0);
       const expensesSav = savAsExpense;
       const expensesAll = expensesTx + expensesPerm + expensesSav;
-      const savAsExpense = savRowsMonth.filter(s=>Number(s.amount)>0).reduce((s,x)=>s+Number(x.amount),0);
-      const savAsIncome = savRowsMonth.filter(s=>Number(s.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+      
 
       
       const balance = incomes - expensesAll;
