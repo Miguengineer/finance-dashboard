@@ -566,7 +566,7 @@
     /* === Finance read-only savings === */
     function renderFinanceSavings(){
       const key=monthSelect.value;
-      const monthOnly = savings.filter(s=>{
+      const monthOnly=[...savings].filter(s=>{
         const d=safeDate(s.date); if(!d) return false;
         return monthKeyFromDate(d)===key;
       });
