@@ -208,9 +208,17 @@
       unsubSal=onSnapshot(q1, snap=>{ salaries=[]; snap.forEach(d=>{ const p=d.data(); p._id=d.id; salaries.push(p); }); renderSalaries(); renderMonthKpisAndChart(); renderSummaries(); });
     }
     function subSav(){ if(!currentUser) return; if(unsubSav) unsubSav();
-      const q1=query(collection(db,"savings"), where("uid","==",currentUser.uid), orderBy("date"));
-      unsubSav=onSnapshot(q1, snap=>{ savings=[]; snap.forEach(d=>{ const s=d.data(); s._id=d.id; savings.push(s); }); renderSavingsTab(); renderFinanceSavings(); });
-    }
+  const q1=query(collection(db,"savings"), where("uid","==",currentUser.uid), orderBy("date"));
+  unsubSav=onSnapshot(q1, snap=>{
+    savings=[]; snap.forEach(d=>{ const s=d.data(); s._id=d.id; savings.push(s); });
+    renderSavingsTab();
+    renderFinanceSavings();
+    renderMonthKpisAndChart();   // ← add this
+    renderSummaries();           // ← and this (balances)
+    renderMonthlySummary();      // ← and this (3-month view)
+  });
+}
+
 
     /* === Month KPIs + Chart (now includes permanents & salaries) === */
     function renderMonthKpisAndChart(existingCatAggTx = {}) {
@@ -218,26 +226,16 @@
   const monthDate = firstDayOfMonthKey(selKey);
 
   // Synthetic permanents (negative) & salaries (positive)
-  const permRows = permanents.map(p=>({
-    amount:Number(p.amount)||0,
-    category:p.category||"Otros", payee:p.name||"Permanente"
-  }));
-  const salRows = salaries.map(p=>({
-    amount:Math.abs(Number(p.amount)||0),
-    category:"Sueldo", payee:p.name||"Sueldo", payer:p.payer
-  }));
+  const permRows = permanents.map(p=>({ amount:Number(p.amount)||0, category:p.category||"Otros", payee:p.name||"Permanente", _dt:mDate }));
+const salRows  = salaries.map(p=>({ amount:Math.abs(Number(p.amount)||0), category:"Sueldo", payee:p.name||"Sueldo", _dt:mDate }));
 
-  // Savings rows for current month: deposits => OUT (treat as expense), withdrawals => IN
-  const savRows = savings.filter(s=>{
-    const d=safeDate(s.date); return d && monthKeyFromDate(d)===selKey;
-  }).map(s=>{
-    const a = Number(s.amount)||0;
-    return {
-      amount: a, // +deposit/-withdrawal
-      category: "Ahorros",
-      owner: s.owner
-    };
-  });
+// NEW: savings for this month key — deposits (+) are expense, withdrawals (-) are income
+const savRows  = savings
+  .filter(s=> monthKeyFromDate(safeDate(s.date)) === key )
+  .map(s=> ({ amount:Number(s.amount)||0, category:"Ahorros", payee:`Ahorro ${s.owner}`, _dt:safeDate(s.date) || mDate }));
+
+const full = [...arr, ...permRows, ...salRows, ...savRows];
+
 
   // KPIs
   let income = 0, expense = 0;
@@ -249,11 +247,11 @@
   // permanents add to expense
   permRows.forEach(p => expense += Math.abs(Number(p.amount)||0));
   // savings: deposits (a>0) are expense; withdrawals (a<0) are income
-  savRows.forEach(s => {
-    const a = Number(s.amount)||0;
-    if (a > 0) expense += a;
-    else if (a < 0) income += Math.abs(a);
-  });
+    savRows.forEach(s=>{
+      const a = Number(s.amount)||0;
+      if (a > 0) expense += a;        // deposit → money out
+      else if (a < 0) income += -a;   // withdrawal → money in
+    });
 
   incomeEl.textContent = fmt(income);
   expenseEl.textContent = fmt(-expense);
@@ -266,7 +264,7 @@
     catAgg[cat]=(catAgg[cat]||0)+Math.abs(Number(p.amount)||0);
   });
   savRows.filter(s=>s.amount>0).forEach(s=>{
-    catAgg["Ahorros"]=(catAgg["Ahorros"]||0)+Math.abs(Number(s.amount)||0);
+    catAgg["Ahorros"] = (catAgg["Ahorros"]||0) + s.amount;
   });
 
   const labels = Object.keys(catAgg), data = Object.values(catAgg);
@@ -287,12 +285,20 @@
   const pieData = [savDep, permTot, txNegMig, txNegJos];
 
   if (spendPie) spendPie.destroy();
-  spendPie = new Chart(spendPieCanvas, {
-    type:"doughnut",
-    data:{ labels: pieLabels, datasets:[{ data: pieData }] },
-    options:{ responsive:true, plugins:{ legend:{ position: "bottom" } } }
-  });
-}
+spendPie = new Chart(spendPieCanvas, {
+  type:"doughnut",
+  data:{ labels: pieLabels, datasets:[{ data: pieData }] },
+  options:{
+    responsive:true,
+    maintainAspectRatio:true,
+    radius: "65%",
+    cutout: "55%",
+    plugins:{
+      legend:{ position:"bottom", labels:{ boxWidth:10, usePointStyle:true } },
+      tooltip:{ callbacks:{ label: (ctx)=> `${ctx.label}: ${fmt(ctx.parsed)}` } }
+    }
+  }
+});
 
     /* === Render finance === */
     function renderMainTable(rows){
@@ -895,7 +901,14 @@
       fillSelect(savType, SAVING_TYPES);
       planMode.value="nueva"; newPlanBox.style.display="block"; existingPlanBox.style.display="none";
     }
-    monthSelect.addEventListener("change", ()=>{ subTx(); renderSummaries(); renderFinanceSavings(); renderInstallmentAnalysis(); renderMonthlySummary(); });
+    monthSelect.addEventListener("change", ()=>{
+  subTx();
+  renderSummaries();
+  renderFinanceSavings();
+  renderInstallmentAnalysis();
+  renderMonthlySummary();
+  renderMonthKpisAndChart();   // ← add this
+});
     installmentsToggle.addEventListener("change", ()=>{ installmentsBox.style.display = installmentsToggle.checked ? "grid" : "none"; });
     planMode.addEventListener("change", ()=>{
       const m=planMode.value; newPlanBox.style.display = m==="nueva"?"block":"none"; existingPlanBox.style.display = m==="existente"?"block":"none";
