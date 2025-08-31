@@ -13,8 +13,9 @@
     import { firebaseConfig } from "./firebase-config.js";
 
     // ---- Config / constants ----
-    const CATEGORIES = ["Salud","Comida","Casa","Gatas"];
+    const CATEGORIES = ["Salud","Comida","Casa","Gatas","Uber Eats","Otros"];
     const PAYERS = ["Miguelito","Josefita"];
+    const SAVING_TYPES = ["Fondos Mutuos"];
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
@@ -30,6 +31,13 @@
     const logoutBtn = document.getElementById("logout-btn");
     const authHelp = document.getElementById("auth-help");
 
+    // Tabs
+    const tabFin = document.getElementById("tab-fin");
+    const tabSav = document.getElementById("tab-sav");
+    const pageFin = document.getElementById("page-fin");
+    const pageSav = document.getElementById("page-sav");
+
+    // Finance form / table
     const form = document.getElementById("tx-form");
     const txTableBody = document.getElementById("tx-tbody");
     const monthSelect = document.getElementById("month-select");
@@ -39,11 +47,12 @@
     const catChartCanvas = document.getElementById("catChart");
     const catSelect = document.getElementById("category");
     const payerSelect = document.getElementById("payer");
+    const typeSelect = document.getElementById("tx-type");
 
     const installmentsToggle = document.getElementById("with-installments");
     const installmentsBox = document.getElementById("installments-box");
 
-    // Permanentes
+    // Permanentes (gastos) y Sueldos (ingresos)
     const permList = document.getElementById("perm-list");
     const permName = document.getElementById("perm-name");
     const permAmount = document.getElementById("perm-amount");
@@ -51,21 +60,42 @@
     const permPayer = document.getElementById("perm-payer");
     const permAddBtn = document.getElementById("perm-add");
 
-    // Summary tables
-    const sumMigNo = document.getElementById("sum-mig-no");
-    const sumMigYes = document.getElementById("sum-mig-yes");
-    const sumMigMini = document.getElementById("sum-mig-mini");
-    const sumJosNo = document.getElementById("sum-jos-no");
-    const sumJosYes = document.getElementById("sum-jos-yes");
-    const sumJosMini = document.getElementById("sum-jos-mini");
-    const globalSummary = document.getElementById("global-summary");
+    const salList = document.getElementById("sal-list");
+    const salName = document.getElementById("sal-name");
+    const salAmount = document.getElementById("sal-amount");
+    const salPayer = document.getElementById("sal-payer");
+    const salAddBtn = document.getElementById("sal-add");
+
+    // Savings tab
+    const savForm = document.getElementById("sav-form");
+    const savOwner = document.getElementById("sav-owner");
+    const savType  = document.getElementById("sav-type");
+    const savAmount = document.getElementById("sav-amount");
+    const savDate = document.getElementById("sav-date");
+    const savTable = document.getElementById("sav-table");
+    const savSummary = document.getElementById("sav-summary");
+
+    // Read-only savings on finance
+    const financeSavings = document.getElementById("finance-savings");
+
+    // Toast
+    const toast = document.getElementById("toast");
+    const showToast = (msg) => {
+      toast.textContent = msg;
+      toast.classList.add("show");
+      setTimeout(()=>toast.classList.remove("show"), 800);
+    };
 
     let unsubscribeTx = null;
     let unsubscribePerm = null;
+    let unsubscribeSal = null;
+    let unsubscribeSav = null;
     let catChart = null;
     let currentUser = null;
-    let currentTxRows = [];      // Firestore transactions of selected month
-    let currentPerms = [];       // Permanentes (all time; applied to every month)
+    let currentTxRows = [];     // transactions of selected month
+    let currentPerms = [];      // permanents (all)
+    let currentSalaries = [];   // salaries (all)
+    let currentSavings = [];    // savings (all)
 
     // ---- Helpers ----
     function monthKeyFromDate(d) {
@@ -77,9 +107,7 @@
     function fillSelect(select, options){
       select.innerHTML = "";
       options.forEach(v => {
-        const o = document.createElement("option");
-        o.value = v; o.textContent = v;
-        select.appendChild(o);
+        const o = document.createElement("option"); o.value = v; o.textContent = v; select.appendChild(o);
       });
     }
     function populateMonthSelect() {
@@ -101,7 +129,7 @@
       catch (e) { alert(e.message); }
     });
     registerBtn.addEventListener("click", async () => {
-      try { await createUserWithEmailAndPassword(auth, emailEl.value.trim(), passEl.value.trim()); alert("Usuario creado y autenticado."); }
+      try { await createUserWithEmailAndPassword(auth, emailEl.value.trim(), passEl.value.trim()); showToast("Usuario creado"); }
       catch (e) { alert(e.message); }
     });
     logoutBtn.addEventListener("click", async () => { try { await signOut(auth); } catch (e) { alert(e.message); } });
@@ -110,6 +138,18 @@
       loginView.style.display = view === "login" ? "block" : "none";
       dashboardView.style.display = view === "dashboard" ? "block" : "none";
     }
+
+    // ---- Tabs ----
+    function activateTab(which){
+      [tabFin,tabSav].forEach(t=>t.classList.remove("active"));
+      [pageFin,pageSav].forEach(p=>p.classList.remove("active"));
+      if (which==="fin"){ tabFin.classList.add("active"); pageFin.classList.add("active"); }
+      else { tabSav.classList.add("active"); pageSav.classList.add("active"); }
+      // keep month context; savings page also benefits from selected month (for finance read-only summary we show monthly contributions)
+      renderFinanceSavings(); // refresh RO savings box when switching back
+    }
+    tabFin.addEventListener("click", ()=>activateTab("fin"));
+    tabSav.addEventListener("click", ()=>activateTab("sav"));
 
     // ---- Firestore subscriptions ----
     function subscribeToTransactions() {
@@ -123,12 +163,10 @@
         let income = 0, expense = 0;
         const catAgg = {};
         snap.forEach(d => {
-          const t = d.data();
-          t._id = d.id;
-          currentTxRows.push(t);
+          const t = d.data(); t._id = d.id; currentTxRows.push(t);
           const amt = Number(t.amount) || 0;
           if (amt >= 0) income += amt; else expense += Math.abs(amt);
-          const cat = t.category || "Uncategorized";
+          const cat = t.category || "Otros";
           catAgg[cat] = (catAgg[cat] || 0) + Math.abs(amt);
         });
         renderMainTable(currentTxRows);
@@ -137,6 +175,7 @@
         expenseEl.textContent = expense.toFixed(0);
         totalEl.textContent = (income - expense).toFixed(0);
         renderSummaries();
+        renderFinanceSavings();
       });
     }
 
@@ -146,16 +185,37 @@
       const permCol = collection(db, "permanents");
       const q1 = query(permCol, where("uid","==", currentUser.uid), orderBy("name"));
       unsubscribePerm = onSnapshot(q1, (snap) => {
-        currentPerms = [];
-        snap.forEach(d => {
-          const p = d.data(); p._id = d.id; currentPerms.push(p);
-        });
+        currentPerms = []; snap.forEach(d => { const p = d.data(); p._id = d.id; currentPerms.push(p); });
         renderPermanents();
         renderSummaries();
       });
     }
 
-    // ---- Renderers ----
+    function subscribeToSalaries() {
+      if (!currentUser) return;
+      if (unsubscribeSal) { unsubscribeSal(); unsubscribeSal = null; }
+      const salCol = collection(db, "salaries");
+      const q1 = query(salCol, where("uid","==", currentUser.uid), orderBy("name"));
+      unsubscribeSal = onSnapshot(q1, (snap) => {
+        currentSalaries = []; snap.forEach(d => { const p = d.data(); p._id = d.id; currentSalaries.push(p); });
+        renderSalaries();
+        renderSummaries();
+      });
+    }
+
+    function subscribeToSavings() {
+      if (!currentUser) return;
+      if (unsubscribeSav) { unsubscribeSav(); unsubscribeSav = null; }
+      const savCol = collection(db, "savings");
+      const q1 = query(savCol, where("uid","==", currentUser.uid), orderBy("date"));
+      unsubscribeSav = onSnapshot(q1, (snap) => {
+        currentSavings = []; snap.forEach(d => { const s = d.data(); s._id = d.id; currentSavings.push(s); });
+        renderSavingsTab();
+        renderFinanceSavings();
+      });
+    }
+
+    // ---- Renderers (Finanzas) ----
     function renderMainTable(rows) {
       txTableBody.innerHTML = "";
       for (const r of rows) {
@@ -171,17 +231,16 @@
           <td contenteditable="true" data-field="payer">${r.payer || ""}</td>
           <td contenteditable="true" data-field="notes">${r.notes || ""}</td>
           <td>
-            <button class="mini danger" data-action="delete">Delete</button>
-            <button class="mini" data-action="save">Save</button>
+            <button class="mini danger" data-action="delete">Eliminar</button>
+            <button class="mini" data-action="save">Guardar</button>
           </td>`;
         txTableBody.appendChild(tr);
       }
-      // row actions
       txTableBody.querySelectorAll("button[data-action='delete']").forEach(btn => {
         btn.addEventListener("click", async (e) => {
           const tr = e.target.closest("tr"); const id = tr.dataset.id;
           if (!confirm("¿Eliminar transacción?")) return;
-          try { await deleteDoc(doc(db, "transactions", id)); }
+          try { await deleteDoc(doc(db, "transactions", id)); showToast("Transacción eliminada"); }
           catch (err) { alert(err.message); }
         });
       });
@@ -195,7 +254,7 @@
             if (f === "date") { const d = new Date(v); payload["date"] = d; payload["month"] = monthKeyFromDate(d); }
             else { payload[f] = v; }
           });
-          try { await updateDoc(doc(db, "transactions", id), payload); }
+          try { await updateDoc(doc(db, "transactions", id), payload); showToast("Transacción guardada"); }
           catch (err) { alert(err.message); }
         });
       });
@@ -213,13 +272,9 @@
     }
 
     function renderPermanents() {
-      // Grid of always-visible "knobs"
       permList.innerHTML = "";
       if (!currentPerms.length) {
-        const p = document.createElement("p");
-        p.className = "subtle";
-        p.textContent = "No hay gastos permanentes. Agrega uno abajo.";
-        permList.appendChild(p);
+        permList.innerHTML = `<p class="subtle">No hay gastos permanentes. Agrega uno abajo.</p>`;
         return;
       }
       const grid = document.createElement("div");
@@ -228,8 +283,8 @@
         const c = document.createElement("div");
         c.className = "perm-card";
         c.innerHTML = `
-          <div class="section-title">${p.name || "(Sin nombre)"} <span class="badge">Permanente</span></div>
-          <label>Monto (gasto, se aplica cada mes)
+          <div class="section-title"><b>${p.name || "(Sin nombre)"}</b> <span class="badge red">Permanente</span></div>
+          <label>Monto mensual (gasto)
             <input type="number" data-f="amount" value="${Math.abs(Number(p.amount)||0)}">
           </label>
           <label>Categoría
@@ -253,15 +308,14 @@
       });
       permList.appendChild(grid);
 
-      // actions
       permList.querySelectorAll("button[data-action='save']").forEach(btn => {
         btn.addEventListener("click", async () => {
           const id = btn.getAttribute("data-id");
           const root = btn.closest(".perm-card");
-          const amount = -Math.abs(Number(root.querySelector('input[data-f="amount"]').value||0)); // store negative
+          const amount = -Math.abs(Number(root.querySelector('input[data-f="amount"]').value||0));
           const category = root.querySelector('select[data-f="category"]').value;
           const payer = root.querySelector('select[data-f="payer"]').value;
-          try { await updateDoc(doc(db, "permanents", id), { amount, category, payer }); }
+          try { await updateDoc(doc(db, "permanents", id), { amount, category, payer }); showToast("Permanente guardado"); }
           catch (e) { alert(e.message); }
         });
       });
@@ -269,32 +323,79 @@
         btn.addEventListener("click", async () => {
           const id = btn.getAttribute("data-id");
           if (!confirm("¿Eliminar gasto permanente?")) return;
-          try { await deleteDoc(doc(db, "permanents", id)); }
+          try { await deleteDoc(doc(db, "permanents", id)); showToast("Permanente eliminado"); }
+          catch (e) { alert(e.message); }
+        });
+      });
+    }
+
+    function renderSalaries() {
+      salList.innerHTML = "";
+      if (!currentSalaries.length) {
+        salList.innerHTML = `<p class="subtle">No hay sueldos definidos. Agrega uno abajo.</p>`;
+        return;
+      }
+      const grid = document.createElement("div");
+      grid.className = "perms-grid";
+      currentSalaries.forEach(p => {
+        const c = document.createElement("div");
+        c.className = "perm-card";
+        c.innerHTML = `
+          <div class="section-title"><b>${p.name || "Sueldo"}</b> <span class="badge green">Sueldo</span></div>
+          <label>Monto mensual (ingreso)
+            <input type="number" data-f="amount" value="${Math.abs(Number(p.amount)||0)}">
+          </label>
+          <label>Pagador (quién recibe)
+            <select data-f="payer"></select>
+          </label>
+          <div class="row">
+            <button class="mini" data-action="save" data-id="${p._id}">Guardar</button>
+            <button class="mini danger" data-action="delete" data-id="${p._id}">Eliminar</button>
+          </div>
+        `;
+        const paySel = c.querySelector('select[data-f="payer"]');
+        fillSelect(paySel, PAYERS);
+        if (p.payer) paySel.value = p.payer;
+        grid.appendChild(c);
+      });
+      salList.appendChild(grid);
+
+      salList.querySelectorAll("button[data-action='save']").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const root = btn.closest(".perm-card");
+          const amount = Math.abs(Number(root.querySelector('input[data-f="amount"]').value||0)); // positive
+          const payer = root.querySelector('select[data-f="payer"]').value;
+          try { await updateDoc(doc(db, "salaries", id), { amount, payer }); showToast("Sueldo guardado"); }
+          catch (e) { alert(e.message); }
+        });
+      });
+      salList.querySelectorAll("button[data-action='delete']").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("¿Eliminar sueldo?")) return;
+          try { await deleteDoc(doc(db, "salaries", id)); showToast("Sueldo eliminado"); }
           catch (e) { alert(e.message); }
         });
       });
     }
 
     function renderSummaries() {
-      // Build per-payer buckets for selected month
       const selKey = monthSelect.value;
       const monthDate = firstDayOfMonthKey(selKey);
 
-      // Synthesize permanents as rows for this month (Sin cuotas)
+      // permanentes → sintéticos (negativos)
       const permRows = currentPerms.map(p => ({
-        ...p,
-        _synthetic: true,
-        date: monthDate,
-        month: selKey,
-        amount: Number(p.amount), // already negative
-        category: p.category || "Gatas",
-        payee: p.name || "Gasto Permanente",
-        account: p.account || "",
-        notes: "(permanente)",
+        ...p, _synthetic:true, date:monthDate, month:selKey, amount:Number(p.amount),
+        category:p.category || "Otros", payee:p.name || "Gasto Permanente", account:p.account||"", notes:"(permanente)"
+      }));
+      // sueldos → sintéticos (positivos)
+      const salRows = currentSalaries.map(p => ({
+        ...p, _synthetic:true, date:monthDate, month:selKey, amount:Math.abs(Number(p.amount)),
+        category:"Sueldo", payee:p.name || "Sueldo", account:"", notes:"(sueldo)", payer:p.payer
       }));
 
-      const allRows = [...currentTxRows]; // transactions only for main table
-      const rowsForSummary = [...currentTxRows, ...permRows];
+      const rowsForSummary = [...currentTxRows, ...permRows, ...salRows];
 
       const group = (rows, payer, withCuotas) =>
         rows.filter(r => (r.payer===payer) && (!!r.installmentPlan === withCuotas));
@@ -304,15 +405,14 @@
       const josNo = group(rowsForSummary, "Josefita", false);
       const josYes = group(rowsForSummary, "Josefita", true);
 
-      renderSimpleTable(sumMigNo, migNo, "Miguelito · Sin cuotas (incluye permanentes)");
-      renderSimpleTable(sumMigYes, migYes, "Miguelito · Con cuotas");
-      renderMini(sumMigMini, migNo, migYes, "Miguelito");
+      renderSimpleTable(document.getElementById("sum-mig-no"), migNo, "Miguelito · Sin cuotas (incluye permanentes/sueldos)");
+      renderSimpleTable(document.getElementById("sum-mig-yes"), migYes, "Miguelito · Con cuotas");
+      renderMini(document.getElementById("sum-mig-mini"), migNo, migYes, "Miguelito");
 
-      renderSimpleTable(sumJosNo, josNo, "Josefita · Sin cuotas (incluye permanentes)");
-      renderSimpleTable(sumJosYes, josYes, "Josefita · Con cuotas");
-      renderMini(sumJosMini, josNo, josYes, "Josefita");
+      renderSimpleTable(document.getElementById("sum-jos-no"), josNo, "Josefita · Sin cuotas (incluye permanentes/sueldos)");
+      renderSimpleTable(document.getElementById("sum-jos-yes"), josYes, "Josefita · Con cuotas");
+      renderMini(document.getElementById("sum-jos-mini"), josNo, josYes, "Josefita");
 
-      // Global
       const tot = (arr) => arr.reduce((s,x)=>s+Number(x.amount||0),0);
       const migTot = tot(migNo)+tot(migYes);
       const josTot = tot(josNo)+tot(josYes);
@@ -321,15 +421,15 @@
       const expenses = rowsForSummary.filter(r => Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
       const balance = incomes - expenses;
 
-      globalSummary.innerHTML = `
+      document.getElementById("global-summary").innerHTML = `
         <table>
           <thead class="sticky-head"><tr><th>Resumen Global</th><th>Monto</th></tr></thead>
           <tbody>
-            <tr><td>Ingresos (todos)</td><td class="pos">${incomes.toFixed(0)}</td></tr>
+            <tr><td>Ingresos (incluye sueldos)</td><td class="pos">${incomes.toFixed(0)}</td></tr>
             <tr><td>Gastos (incluye permanentes)</td><td class="neg">${expenses.toFixed(0)}</td></tr>
             <tr><td><b>Balance</b></td><td><b>${balance.toFixed(0)}</b></td></tr>
-            <tr><td>Miguelito (total)</td><td>${migTot.toFixed(0)}</td></tr>
-            <tr><td>Josefita (total)</td><td>${josTot.toFixed(0)}</td></tr>
+            <tr><td><span class="badge blue">Miguelito</span> Total</td><td>${migTot.toFixed(0)}</td></tr>
+            <tr><td><span class="badge amber">Josefita</span> Total</td><td>${josTot.toFixed(0)}</td></tr>
           </tbody>
         </table>
       `;
@@ -368,11 +468,28 @@
         <table>
           <thead class="sticky-head"><tr><th>${who} · Resumen</th><th>Monto</th></tr></thead>
           <tbody>
-            <tr><td>Sin cuotas (incl. permanentes)</td><td>${no.toFixed(0)}</td></tr>
+            <tr><td>Sin cuotas</td><td>${no.toFixed(0)}</td></tr>
             <tr><td>Con cuotas</td><td>${yes.toFixed(0)}</td></tr>
             <tr><td><b>Total</b></td><td><b>${all.toFixed(0)}</b></td></tr>
           </tbody>
         </table>
+      `;
+    }
+
+    // ---- Finance read-only savings (from savings tab, month-filtered) ----
+    function renderFinanceSavings(){
+      const selKey = monthSelect.value;
+      const monthOnly = currentSavings.filter(s => monthKeyFromDate(s.date?.toDate?.()? s.date.toDate() : s.date) === selKey);
+      const sum = (who)=>monthOnly.filter(x=>x.owner===who).reduce((s,x)=>s+Number(x.amount||0),0);
+      const mig = sum("Miguelito"), jos = sum("Josefita"), con = sum("Conjunto");
+      const total = mig+jos+con;
+      financeSavings.innerHTML = `
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-label">Ahorro Miguelito (mes)</div><div class="kpi-value">${mig.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label">Ahorro Josefita (mes)</div><div class="kpi-value">${jos.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label">Ahorro Conjunto (mes)</div><div class="kpi-value">${con.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label"><b>Total Ahorro (mes)</b></div><div class="kpi-value">${total.toFixed(0)}</div></div>
+        </div>
       `;
     }
 
@@ -381,11 +498,14 @@
       e.preventDefault();
       const fd = new FormData(form);
       const dateStr = fd.get("date");
-      const baseAmount = Number(fd.get("amount"));
+      const baseAmountRaw = Number(fd.get("amount"));
+      const txType = fd.get("tx-type"); // Gasto / Ingreso
+      // enforce sign
+      const baseAmount = txType === "Ingreso" ? Math.abs(baseAmountRaw) : -Math.abs(baseAmountRaw);
 
       const txCommon = {
         uid: currentUser.uid,
-        category: fd.get("category") || "Gatas",
+        category: fd.get("category") || "Otros",
         payee: fd.get("payee") || "",
         payer: fd.get("payer") || "",
         account: fd.get("account") || "",
@@ -404,10 +524,12 @@
               installmentPlan: { totalAmount: baseAmount, count: n, index: i+1, startDate: startDate } };
             await addDoc(collection(db, "transactions"), tx);
           }
+          showToast("Transacción en cuotas agregada");
         } else {
           const d = new Date(dateStr);
           const tx = { ...txCommon, date: d, month: monthKeyFromDate(d), amount: baseAmount };
           await addDoc(collection(db, "transactions"), tx);
+          showToast("Transacción agregada");
         }
         form.reset();
         document.getElementById("date").valueAsDate = new Date();
@@ -416,7 +538,7 @@
     });
 
     // ---- Permanentes: add ----
-    permAddBtn.addEventListener("click", async () => {
+    document.getElementById("perm-add").addEventListener("click", async () => {
       const name = permName.value.trim();
       const amt = Number(permAmount.value);
       if (!name || isNaN(amt)) { alert("Nombre y monto requeridos"); return; }
@@ -424,24 +546,97 @@
         await addDoc(collection(db,"permanents"), {
           uid: currentUser.uid,
           name,
-          // store negative (expense)
-          amount: -Math.abs(amt),
-          category: permCategory.value || "Gatas",
+          amount: -Math.abs(amt), // negative
+          category: permCategory.value || "Otros",
           payer: permPayer.value || "Miguelito",
           createdAt: serverTimestamp()
         });
         permName.value = ""; permAmount.value = "";
+        showToast("Permanente agregado");
       } catch (e) { alert(e.message); }
     });
 
-    // ---- Init ----
-    populateMonthSelect();
-    fillSelect(catSelect, CATEGORIES);
-    fillSelect(payerSelect, PAYERS);
-    fillSelect(permCategory, CATEGORIES);
-    fillSelect(permPayer, PAYERS);
+    // ---- Sueldos: add ----
+    document.getElementById("sal-add").addEventListener("click", async () => {
+      const name = salName.value.trim() || "Sueldo";
+      const amt = Number(salAmount.value);
+      if (isNaN(amt)) { alert("Monto requerido"); return; }
+      try {
+        await addDoc(collection(db,"salaries"), {
+          uid: currentUser.uid, name, amount: Math.abs(amt), payer: salPayer.value || "Miguelito", createdAt: serverTimestamp()
+        });
+        salName.value = ""; salAmount.value = "";
+        showToast("Sueldo agregado");
+      } catch (e) { alert(e.message); }
+    });
 
-    monthSelect.addEventListener("change", () => { subscribeToTransactions(); renderSummaries(); });
+    // ---- Savings tab ----
+    savForm.addEventListener("submit", async (e)=>{
+      e.preventDefault();
+      const owner = savOwner.value, type = savType.value;
+      const amount = Number(savAmount.value);
+      const date = new Date(savDate.value);
+      if (isNaN(amount) || !date) { alert("Monto/Fecha inválidos"); return; }
+      try{
+        await addDoc(collection(db,"savings"), {
+          uid: currentUser.uid, owner, type, amount, date, month: monthKeyFromDate(date), createdAt: serverTimestamp()
+        });
+        showToast("Ahorro registrado");
+        savAmount.value=""; savDate.value="";
+      }catch(e2){ alert(e2.message); }
+    });
+
+    function renderSavingsTab(){
+      // table of all savings (recent first)
+      const rows = [...currentSavings].sort((a,b)=>{
+        const da = a.date?.toDate?.()? a.date.toDate() : new Date(a.date);
+        const db = b.date?.toDate?.()? b.date.toDate() : new Date(b.date);
+        return db - da;
+      });
+      savTable.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead class="sticky-head"><tr><th>Fecha</th><th>Dueño</th><th>Tipo</th><th>Monto</th></tr></thead>
+            <tbody>
+              ${rows.map(r=>{
+                const d = r.date?.toDate?.()? r.date.toDate() : new Date(r.date);
+                const ds = d.toISOString().slice(0,10);
+                const amt = Number(r.amount||0);
+                return `<tr><td>${ds}</td><td>${r.owner}</td><td>${r.type}</td><td class="${amt<0?'neg':'pos'}">${amt.toFixed(0)}</td></tr>`
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      // summary totals
+      const sum = (who)=>rows.filter(x=>x.owner===who).reduce((s,x)=>s+Number(x.amount||0),0);
+      const mig = sum("Miguelito"), jos = sum("Josefita"), con = sum("Conjunto");
+      const total = mig+jos+con;
+      savSummary.innerHTML = `
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-label">Miguelito</div><div class="kpi-value">${mig.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label">Josefita</div><div class="kpi-value">${jos.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label">Conjunto</div><div class="kpi-value">${con.toFixed(0)}</div></div>
+          <div class="kpi"><div class="kpi-label"><b>Total Ahorros</b></div><div class="kpi-value">${total.toFixed(0)}</div></div>
+        </div>
+      `;
+    }
+
+    // ---- Init ----
+    function initSelectors(){
+      fillSelect(catSelect, CATEGORIES);
+      fillSelect(payerSelect, PAYERS);
+      fillSelect(permCategory, CATEGORIES);
+      fillSelect(permPayer, PAYERS);
+      fillSelect(salPayer, PAYERS);
+      fillSelect(savOwner, ["Miguelito","Josefita","Conjunto"]);
+      fillSelect(savType, SAVING_TYPES);
+    }
+    function populateMonth(){
+      monthSelect.innerHTML="";
+      populateMonthSelect();
+    }
+    monthSelect.addEventListener("change", () => { subscribeToTransactions(); renderSummaries(); renderFinanceSavings(); });
     installmentsToggle.addEventListener("change", () => { installmentsBox.style.display = installmentsToggle.checked ? "grid" : "none"; });
 
     onAuthStateChanged(auth, (user) => {
@@ -449,17 +644,27 @@
       if (!user) { show("login"); return; }
       show("dashboard");
       document.getElementById("date").valueAsDate = new Date();
+      initSelectors(); populateMonth();
+      activateTab("fin");
       subscribeToTransactions();
       subscribeToPermanents();
+      subscribeToSalaries();
+      subscribeToSavings();
     });
 
     if (!firebaseConfig || !firebaseConfig.projectId) { authHelp.style.display = "block"; }
   </script>
 </head>
 <body>
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
   <!-- Login -->
   <div id="login-view" class="container" style="display:none">
-    <h1>Finanzas Familiares</h1>
+    <div class="topbar">
+      <h1>Finanzas Familiares</h1>
+      <span class="badge blue">Login</span>
+    </div>
     <div class="card">
       <h2>Acceso</h2>
       <label>Email <input id="email" type="email" placeholder="you@example.com"></label>
@@ -477,104 +682,169 @@
     <div class="topbar">
       <h1>Home Finance Dashboard</h1>
       <div class="topbar-right">
-        <label>Mes <select id="month-select"></select></label>
+        <span class="badge amber">Mes</span>
+        <select id="month-select"></select>
+        <div class="tabs">
+          <button id="tab-fin" class="tab active">Finanzas</button>
+          <button id="tab-sav" class="tab">Ahorros</button>
+        </div>
         <button id="logout-btn">Logout</button>
       </div>
     </div>
 
-    <div class="grid">
-      <!-- Left column: KPIs + Transactions -->
-      <div class="grid-wide">
-        <div class="card">
-          <h3>Resumen del Mes</h3>
-          <div class="kpis">
-            <div class="kpi"><div class="kpi-label">Ingresos</div><div id="income" class="kpi-value">0</div></div>
-            <div class="kpi"><div class="kpi-label">Gastos</div><div id="expense" class="kpi-value">0</div></div>
-            <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">0</div></div>
+    <!-- Page: Finanzas -->
+    <div id="page-fin" class="tabpage active">
+      <div class="grid">
+        <!-- Col izquierda: KPIs + formulario + tabla -->
+        <div class="grid-wide">
+          <div class="card">
+            <h3>Resumen del Mes
+              <span class="badge blue">Ingresos</span>
+              <span class="badge red">Gastos</span>
+              <span class="badge green">Balance</span>
+            </h3>
+            <div class="kpis">
+              <div class="kpi"><div class="kpi-label">Ingresos</div><div id="income" class="kpi-value">0</div></div>
+              <div class="kpi"><div class="kpi-label">Gastos</div><div id="expense" class="kpi-value">0</div></div>
+              <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">0</div></div>
+            </div>
+            <canvas id="catChart" height="120"></canvas>
           </div>
-          <canvas id="catChart" height="120"></canvas>
-        </div>
 
-        <div class="card">
-          <h3>Agregar Movimiento</h3>
-          <form id="tx-form" class="form">
-            <div class="split">
-              <div>
-                <label>Fecha <input type="date" id="date" name="date" required></label>
-                <label>Monto (positivo = ingreso; negativo = gasto) <input type="number" step="1" name="amount" required></label>
-                <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
-                <div id="installments-box" class="installments" style="display:none">
-                  <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
-                  <p class="hint">Se crearán N movimientos mensuales iguales a partir de la fecha indicada.</p>
+          <div class="card">
+            <h3>Agregar Movimiento <span class="badge amber">rápido</span></h3>
+            <form id="tx-form" class="form">
+              <div class="split">
+                <div>
+                  <label>Fecha <input type="date" id="date" name="date" required></label>
+                  <label>Tipo
+                    <select id="tx-type" name="tx-type">
+                      <option>Gasto</option>
+                      <option>Ingreso</option>
+                    </select>
+                  </label>
+                  <label>Monto <input type="number" step="1" name="amount" required></label>
+                  <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
+                  <div id="installments-box" class="installments" style="display:none">
+                    <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
+                    <p class="hint">Se crearán N movimientos mensuales iguales a partir de la fecha indicada.</p>
+                  </div>
+                </div>
+                <div>
+                  <label>Categoría
+                    <select id="category" name="category"></select>
+                  </label>
+                  <label>Payee/Descripción <input type="text" name="payee"></label>
+                  <label>Pagador
+                    <select id="payer" name="payer"></select>
+                  </label>
+                  <label>Cuenta/Tarjeta <input type="text" name="account"></label>
+                  <label>Notas <input type="text" name="notes"></label>
                 </div>
               </div>
-              <div>
-                <label>Categoría
-                  <select id="category" name="category"></select>
-                </label>
-                <label>Payee/Descripción <input type="text" name="payee"></label>
-                <label>Pagador
-                  <select id="payer" name="payer"></select>
-                </label>
-                <label>Cuenta/Tarjeta <input type="text" name="account"></label>
-                <label>Notas <input type="text" name="notes"></label>
-              </div>
+              <button type="submit">Guardar</button>
+            </form>
+          </div>
+
+          <div class="card wide">
+            <h3>Transacciones (click para editar → Guardar)</h3>
+            <div class="table-wrap">
+              <table>
+                <thead class="sticky-head">
+                  <tr>
+                    <th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Pagador</th><th>Notas</th><th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody id="tx-tbody"></tbody>
+              </table>
             </div>
-            <button type="submit">Guardar</button>
-          </form>
+          </div>
         </div>
 
-        <div class="card wide">
-          <h3>Transacciones (click para editar → Guardar)</h3>
-          <div class="table-wrap">
-            <table>
-              <thead class="sticky-head">
-                <tr>
-                  <th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Pagador</th><th>Notas</th><th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody id="tx-tbody"></tbody>
-            </table>
+        <!-- Col derecha: Permanentes + Sueldos + Ahorros (RO) + Resúmenes -->
+        <div class="grid-wide">
+          <div class="card">
+            <h3>Gastos Permanentes <span class="badge red">siempre visibles</span></h3>
+            <div id="perm-list"></div>
+            <div class="hr"></div>
+            <div class="row">
+              <label style="flex:1">Nombre <input type="text" id="perm-name" placeholder="Arriendo, Internet, etc."></label>
+              <label>Monto mensual (gasto) <input type="number" id="perm-amount" placeholder="ej. 350000"></label>
+              <label>Categoría <select id="perm-category"></select></label>
+              <label>Pagador <select id="perm-payer"></select></label>
+              <button id="perm-add">Agregar permanente</button>
+            </div>
+            <p class="hint">Se aplican automáticamente al mes seleccionado.</p>
+          </div>
+
+          <div class="card">
+            <h3>Sueldos <span class="badge green">ingresos fijos</span></h3>
+            <div id="sal-list"></div>
+            <div class="hr"></div>
+            <div class="row">
+              <label style="flex:1">Nombre <input type="text" id="sal-name" placeholder="Sueldo Miguel/Jose"></label>
+              <label>Monto mensual (ingreso) <input type="number" id="sal-amount" placeholder="ej. 1200000"></label>
+              <label>Persona <select id="sal-payer"></select></label>
+              <button id="sal-add">Agregar sueldo</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Ahorros (solo lectura de la pestaña Ahorros) <span class="badge blue">mes actual</span></h3>
+            <div id="finance-savings"></div>
+          </div>
+
+          <div class="card">
+            <h3>Resumen por persona</h3>
+            <div class="split">
+              <div>
+                <div id="sum-mig-no" class="details"></div>
+                <div id="sum-mig-yes" class="details" style="margin-top:12px"></div>
+                <div id="sum-mig-mini" style="margin-top:12px"></div>
+              </div>
+              <div>
+                <div id="sum-jos-no" class="details"></div>
+                <div id="sum-jos-yes" class="details" style="margin-top:12px"></div>
+                <div id="sum-jos-mini" style="margin-top:12px"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Resumen Global</h3>
+            <div id="global-summary"></div>
           </div>
         </div>
       </div>
+    </div>
 
-      <!-- Right column: Permanentes + Summaries -->
-      <div class="grid-wide">
-        <div class="card">
-          <h3>Gastos Permanentes</h3>
-          <div id="perm-list"></div>
-          <hr style="border:0;border-top:1px solid #eee;margin:12px 0">
-          <div class="row">
-            <label style="flex:1">Nombre <input type="text" id="perm-name" placeholder="Arriendo, Internet, etc."></label>
-            <label>Monto mensual (gasto) <input type="number" id="perm-amount" placeholder="ej. 350000"></label>
-            <label>Categoría <select id="perm-category"></select></label>
-            <label>Pagador <select id="perm-payer"></select></label>
-            <button id="perm-add">Agregar permanente</button>
-          </div>
-          <p class="hint">Los permanentes se aplican automáticamente al mes seleccionado (como gastos sin cuotas).</p>
-        </div>
-
-        <div class="card">
-          <h3>Resumen por persona</h3>
-          <div class="split">
-            <div>
-              <div id="sum-mig-no" class="details"></div>
-              <div id="sum-mig-yes" class="details" style="margin-top:12px"></div>
-              <div id="sum-mig-mini" style="margin-top:12px"></div>
-            </div>
-            <div>
-              <div id="sum-jos-no" class="details"></div>
-              <div id="sum-jos-yes" class="details" style="margin-top:12px"></div>
-              <div id="sum-jos-mini" style="margin-top:12px"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h3>Resumen Global</h3>
-          <div id="global-summary"></div>
-        </div>
+    <!-- Page: Ahorros -->
+    <div id="page-sav" class="tabpage">
+      <div class="card">
+        <h3>Añadir movimiento de Ahorro <span class="badge amber">Fondos</span></h3>
+        <form id="sav-form" class="row">
+          <label>Dueño
+            <select id="sav-owner"></select>
+          </label>
+          <label>Tipo
+            <select id="sav-type"></select>
+          </label>
+          <label>Monto (+depósito / -retiro)
+            <input type="number" id="sav-amount" required>
+          </label>
+          <label>Fecha
+            <input type="date" id="sav-date" required>
+          </label>
+          <button type="submit">Guardar</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Resumen Ahorros</h3>
+        <div id="sav-summary"></div>
+      </div>
+      <div class="card">
+        <h3>Movimientos</h3>
+        <div id="sav-table"></div>
       </div>
     </div>
   </div>
