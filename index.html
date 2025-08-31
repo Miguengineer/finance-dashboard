@@ -517,36 +517,79 @@
 
       try{
         const mode=fd.get("plan-mode"); // "nueva" | "existente"
-        if (fd.get("with-installments")==="on") {
-          if(mode==="existente"){
-            // existing plan: add ONE cuota using provided planId/index/count
-            const planId = fd.get("plan-id") || "plan";
-            const idx = Number(fd.get("plan-index")||1);
-            const cnt = Number(fd.get("plan-count")||1);
-            const tx={ ...common, date:d0, month:monthKeyFromDate(d0), amount,
-              installmentPlan:{ planId, count:cnt, index:idx, totalAmount: amount*cnt, startDate:d0 } };
-            await addDoc(collection(db,"transactions"), tx);
-            showToast("Cuota agregada a plan existente");
-          } else {
-            // new plan: produce N cuotas equal split with generated planId
-            const n = Number(fd.get("installments-count"));
-            if(!Number.isInteger(n)||n<=0) throw new Error("Número de cuotas inválido");
-            const per = Math.round(amount / n);
-            const planId = `${(fd.get("payee")||"plan")}-${Date.now()}`;
-            for(let i=0;i<n;i++){
-              const dt=addMonths(d0,i);
-              const tx={ ...common, date:dt, month:monthKeyFromDate(dt), amount:per,
-                installmentPlan:{ planId, count:n, index:i+1, totalAmount: amount, startDate:d0 } };
-              await addDoc(collection(db,"transactions"), tx);
-            }
-            showToast("Plan en cuotas creado");
-          }
-        } else {
-          // single shot
-          const tx={ ...common, date:d0, month:monthKeyFromDate(d0), amount };
-          await addDoc(collection(db,"transactions"), tx);
-          showToast("Transacción agregada");
-        }
+        if (fd.get("with-installments") === "on") {
+  const mode = fd.get("plan-mode");           // "nueva" | "existente"
+  const calc = fd.get("installments-calc");   // "automatico" | "manual"
+
+  if (mode === "existente") {
+    // Add ONE installment to an existing plan
+    const planId = fd.get("plan-id") || "plan";
+    const idx = Number(fd.get("plan-index") || 1);
+    const cnt = Number(fd.get("plan-count") || 1);
+
+    // If manual and a specific cuota amount is provided, prefer it; else fall back to main 'amount'
+    const perManual = Number(fd.get("existing-installment-amount"));
+    let cuotaAmount = (!isNaN(perManual) && perManual !== 0)
+      ? (amount >= 0 ? Math.abs(perManual) : -Math.abs(perManual))
+      : amount; // use main amount field (already signed by txType)
+
+    const tx = {
+      ...common,
+      date: d0,
+      month: monthKeyFromDate(d0),
+      amount: cuotaAmount,
+      installmentPlan: { planId, count: cnt, index: idx, totalAmount: cuotaAmount * cnt, startDate: d0 }
+    };
+    await addDoc(collection(db, "transactions"), tx);
+    showToast("Cuota agregada a plan existente");
+  } else {
+    // New plan: create N installments
+    const n = Number(fd.get("installments-count"));
+    if (!Number.isInteger(n) || n <= 0) throw new Error("Número de cuotas inválido");
+
+    let per;        // signed per-installment amount
+    let planTotal;  // signed total plan amount
+
+    if (calc === "automatico") {
+      // even split from the main amount
+      per = Math.round(amount / n);
+      planTotal = amount;
+    } else {
+      // manual: require per-installment; optional total plan
+      const perInput = Number(fd.get("installment-amount"));
+      if (isNaN(perInput) || perInput === 0) throw new Error("Monto por cuota (manual) es obligatorio");
+      const totalInput = Number(fd.get("plan-total-amount"));
+      const unsignedPer = Math.abs(perInput);
+      per = (amount >= 0) ? unsignedPer : -unsignedPer; // keep sign consistent with Gasto/Ingreso
+
+      if (!isNaN(totalInput) && totalInput !== 0) {
+        planTotal = (amount >= 0) ? Math.abs(totalInput) : -Math.abs(totalInput);
+      } else {
+        planTotal = per * n; // infer from per * N (already signed)
+      }
+    }
+
+    const planId = `${(fd.get("payee") || "plan")}-${Date.now()}`;
+    for (let i = 0; i < n; i++) {
+      const dt = addMonths(d0, i);
+      const tx = {
+        ...common,
+        date: dt,
+        month: monthKeyFromDate(dt),
+        amount: per,
+        installmentPlan: { planId, count: n, index: i + 1, totalAmount: planTotal, startDate: d0 }
+      };
+      await addDoc(collection(db, "transactions"), tx);
+    }
+    showToast("Plan en cuotas creado");
+  }
+} else {
+  // single shot (unchanged)
+  const tx = { ...common, date: d0, month: monthKeyFromDate(d0), amount };
+  await addDoc(collection(db, "transactions"), tx);
+  showToast("Transacción agregada");
+}
+
         form.reset(); document.getElementById("date").valueAsDate=new Date();
         installmentsBox.style.display="none"; newPlanBox.style.display="block"; existingPlanBox.style.display="none"; planMode.value="nueva";
       }catch(e2){ alert(e2.message); }
@@ -838,26 +881,58 @@
                   <label>Monto <input type="number" step="1" name="amount" required></label>
 
                   <label>¿Con cuotas? <input type="checkbox" id="with-installments" name="with-installments"></label>
-                  <div id="installments-box" class="installments" style="display:none">
-                    <label>Modo
-                      <select id="plan-mode" name="plan-mode">
-                        <option value="nueva">Nueva</option>
-                        <option value="existente">Existente</option>
-                      </select>
-                    </label>
+                        <div id="installments-box" class="installments" style="display:none">
+                      <label>Modo
+                        <select id="plan-mode" name="plan-mode">
+                          <option value="nueva">Nueva</option>
+                          <option value="existente">Existente</option>
+                        </select>
+                      </label>
 
-                    <div id="new-plan-box">
-                      <label>Número de cuotas <input type="number" id="installments-count" name="installments-count" min="1" value="3"></label>
-                      <p class="hint">Se crearán N movimientos mensuales iguales desde la fecha.</p>
+                      <!-- NEW: calculation mode -->
+                      <label>Cálculo
+                        <select id="installments-calc" name="installments-calc">
+                          <option value="automatico">Automático (divide total / N)</option>
+                          <option value="manual">Manual (monto por cuota)</option>
+                        </select>
+                      </label>
+
+                      <!-- New plan -->
+                      <div id="new-plan-box">
+                        <label>Número de cuotas
+                          <input type="number" id="installments-count" name="installments-count" min="1" value="3">
+                        </label>
+                        <!-- NEW: manual fields (shown only if calc=manual) -->
+                        <div id="manual-new-fields" style="display:none">
+                          <label>Monto por cuota
+                            <input type="number" id="installment-amount" name="installment-amount" placeholder="ej. 50000">
+                          </label>
+                          <label>Total del plan (opcional)
+                            <input type="number" id="plan-total-amount" name="plan-total-amount" placeholder="se infiere = cuota * N">
+                          </label>
+                          <p class="hint">En modo manual, el monto por cuota es obligatorio; si no indicas total del plan, usaremos cuota*N.</p>
+                        </div>
+                        <p class="hint">En modo automático, se crearán N movimientos iguales (total/N) desde la fecha.</p>
+                      </div>
+
+                      <!-- Existing plan -->
+                      <div id="existing-plan-box" style="display:none">
+                        <label>Plan ID <input type="text" name="plan-id" placeholder="ej. Laptop-2025"></label>
+                        <label>Cuota actual <input type="number" name="plan-index" min="1" value="1"></label>
+                        <label>Total de cuotas <input type="number" name="plan-count" min="1" value="5"></label>
+
+                        <!-- NEW: optional per-installment; falls back to 'Monto' if empty -->
+                        <div id="manual-existing-fields" style="display:none">
+                          <label>Monto de la cuota
+                            <input type="number" name="existing-installment-amount" id="existing-installment-amount" placeholder="si vacío, usa Monto de arriba">
+                          </label>
+                          <p class="hint">En plan existente, si indicas monto de la cuota aquí, se usará éste; si no, usamos el campo Monto principal.</p>
+                        </div>
+
+                        <p class="hint">Se agregará solo la cuota actual al plan existente.</p>
+                      </div>
                     </div>
 
-                    <div id="existing-plan-box" style="display:none">
-                      <label>Plan ID <input type="text" name="plan-id" placeholder="ej. Laptop-2025"></label>
-                      <label>Cuota actual <input type="number" name="plan-index" min="1" value="1"></label>
-                      <label>Total de cuotas <input type="number" name="plan-count" min="1" value="5"></label>
-                      <p class="hint">Se agregará solo la cuota actual al plan existente.</p>
-                    </div>
-                  </div>
                 </div>
                 <div>
                   <label>Categoría
