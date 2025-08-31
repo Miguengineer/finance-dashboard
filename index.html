@@ -8,8 +8,14 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-    import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, serverTimestamp, doc, deleteDoc, updateDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import {
+      getAuth, onAuthStateChanged,
+      signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      getFirestore, collection, addDoc, onSnapshot, query, where, orderBy,
+      serverTimestamp, doc, deleteDoc, updateDoc, getDocs
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
     import { firebaseConfig } from "./firebase-config.js";
 
     /* === Config === */
@@ -70,7 +76,6 @@
     const permName = document.getElementById("perm-name");
     const permAmount = document.getElementById("perm-amount");
     const permCategory = document.getElementById("perm-category");
-    const permPayer = document.getElementById("perm-payer");
     const permAddBtn = document.getElementById("perm-add");
 
     const salList = document.getElementById("sal-list");
@@ -93,11 +98,23 @@
 
     // Monthly summary
     const monWrap = document.getElementById("monthly-wrap");
-    const monTop = document.getElementById("monthly-top");
     const monStats = document.getElementById("monthly-stats");
 
     // Installments analysis
     const instWrap = document.getElementById("inst-wrap");
+
+    // Person summaries (add permanents box per column)
+    const sumMigNo = document.getElementById("sum-mig-no");
+    const sumMigYes = document.getElementById("sum-mig-yes");
+    const sumMigMini = document.getElementById("sum-mig-mini");
+    const sumPermA = document.getElementById("sum-perm-a");
+    const sumJosNo = document.getElementById("sum-jos-no");
+    const sumJosYes = document.getElementById("sum-jos-yes");
+    const sumJosMini = document.getElementById("sum-jos-mini");
+    const sumPermB = document.getElementById("sum-perm-b");
+
+    // Global
+    const globalSummary = document.getElementById("global-summary");
 
     // Toast
     const toast = document.getElementById("toast");
@@ -109,7 +126,7 @@
     let txRows = [], permanents = [], salaries = [], savings = [];
 
     /* === Helpers === */
-    const monthKeyFromDate = (d)=>{ const dt=new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`; };
+    const monthKeyFromDate = (d)=>{ const dt=new Date(d); return isFinite(dt)? `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}` : ""; };
     const addMonths = (date, m)=>{ const d=new Date(date); d.setMonth(d.getMonth()+m); return d; };
     const firstDayOfMonthKey = (k)=>{ const [y,m]=k.split("-").map(Number); return new Date(y,m-1,1); };
     const fillSelect = (sel, arr)=>{ sel.innerHTML=""; arr.forEach(v=>{ const o=document.createElement("option"); o.value=v; o.textContent=v; sel.appendChild(o); }); };
@@ -124,6 +141,10 @@
       const pct = Math.max(0, Math.min(100, Math.round((idx/count)*100)));
       const tone = pct<40?"red":(pct<80?"amber":"green");
       return {pct, tone};
+    };
+    const safeDate = (x)=>{
+      const d = x?.toDate?.() ? x.toDate() : new Date(x);
+      return isFinite(d) ? d : null;
     };
 
     /* === Auth === */
@@ -157,33 +178,69 @@
         where("month","==",monthSelect.value),
         orderBy("date"));
       unsubTx = onSnapshot(q1, snap=>{
-        txRows=[]; let income=0, expense=0; const catAgg={};
+        txRows=[]; let income=0, expense=0; const catAggTx={};
         snap.forEach(d=>{
           const t=d.data(); t._id=d.id; txRows.push(t);
           const amt=Number(t.amount)||0;
           if(amt>=0) income+=amt; else expense+=Math.abs(amt);
-          const c=t.category||"Otros"; catAgg[c]=(catAgg[c]||0)+Math.abs(amt);
+          const c=t.category||"Otros";
+          if (amt<0) catAggTx[c]=(catAggTx[c]||0)+Math.abs(amt); // only expense for chart from tx
         });
+        // Combine with permanents/salaries for KPIs/chart
+        renderMonthKpisAndChart(catAggTx);
         renderMainTable(txRows);
-        renderChart(catAgg);
-        incomeEl.textContent=fmt(income);
-        expenseEl.textContent=fmt(-expense);
-        totalEl.textContent=fmt(income-expense);
         renderSummaries();
         renderFinanceSavings();
       });
     }
     function subPerm(){ if(!currentUser) return; if(unsubPerm) unsubPerm();
       const q1=query(collection(db,"permanents"), where("uid","==",currentUser.uid), orderBy("name"));
-      unsubPerm=onSnapshot(q1, snap=>{ permanents=[]; snap.forEach(d=>{ const p=d.data(); p._id=d.id; permanents.push(p); }); renderPermanents(); renderSummaries(); });
+      unsubPerm=onSnapshot(q1, snap=>{ permanents=[]; snap.forEach(d=>{ const p=d.data(); p._id=d.id; permanents.push(p); }); renderPermanents(); renderMonthKpisAndChart(); renderSummaries(); });
     }
     function subSal(){ if(!currentUser) return; if(unsubSal) unsubSal();
       const q1=query(collection(db,"salaries"), where("uid","==",currentUser.uid), orderBy("name"));
-      unsubSal=onSnapshot(q1, snap=>{ salaries=[]; snap.forEach(d=>{ const p=d.data(); p._id=d.id; salaries.push(p); }); renderSalaries(); renderSummaries(); });
+      unsubSal=onSnapshot(q1, snap=>{ salaries=[]; snap.forEach(d=>{ const p=d.data(); p._id=d.id; salaries.push(p); }); renderSalaries(); renderMonthKpisAndChart(); renderSummaries(); });
     }
     function subSav(){ if(!currentUser) return; if(unsubSav) unsubSav();
       const q1=query(collection(db,"savings"), where("uid","==",currentUser.uid), orderBy("date"));
       unsubSav=onSnapshot(q1, snap=>{ savings=[]; snap.forEach(d=>{ const s=d.data(); s._id=d.id; savings.push(s); }); renderSavingsTab(); renderFinanceSavings(); });
+    }
+
+    /* === Month KPIs + Chart (now includes permanents & salaries) === */
+    function renderMonthKpisAndChart(existingCatAggTx = {}){
+      // Build synthetic rows for current month
+      const selKey = monthSelect.value;
+      const monthDate = firstDayOfMonthKey(selKey);
+      const permRows = permanents.map(p=>({
+        _synthetic:true, date:monthDate, month:selKey,
+        amount:Number(p.amount)||0, category:p.category||"Otros", payee:p.name||"Permanente"
+      }));
+      const salRows = salaries.map(p=>({
+        _synthetic:true, date:monthDate, month:selKey,
+        amount:Math.abs(Number(p.amount)||0), category:"Sueldo", payee:p.name||"Sueldo", payer:p.payer
+      }));
+      // KPIs: income includes salaries + positive tx; expense includes permanents + negative tx
+      let income=0, expense=0;
+      txRows.forEach(t=>{ const a=Number(t.amount)||0; if(a>=0) income+=a; else expense+=Math.abs(a); });
+      salRows.forEach(s=> income += Number(s.amount)||0);
+      permRows.forEach(p=> expense += Math.abs(Number(p.amount)||0));
+      incomeEl.textContent=fmt(income);
+      expenseEl.textContent=fmt(-expense);
+      totalEl.textContent=fmt(income-expense);
+
+      // Chart: show expenses by category including permanents + expense tx
+      const catAgg = {...existingCatAggTx};
+      permRows.forEach(p=>{
+        const cat=p.category||"Otros";
+        catAgg[cat]=(catAgg[cat]||0)+Math.abs(Number(p.amount)||0);
+      });
+      const labels=Object.keys(catAgg), data=Object.values(catAgg);
+      if(catChart) catChart.destroy();
+      catChart=new Chart(catChartCanvas,{
+        type:"bar",
+        data:{ labels, datasets:[{ label:"Gasto por categoría", data }] },
+        options:{ responsive:true, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>fmt(v) } } } }
+      });
     }
 
     /* === Render finance === */
@@ -191,7 +248,8 @@
       txTableBody.innerHTML="";
       rows.forEach(r=>{
         const tr=document.createElement("tr"); tr.dataset.id=r._id;
-        const dateStr = r.date?.toDate?.()? r.date.toDate().toISOString().slice(0,10) : (r.date||"");
+        const d0 = safeDate(r.date);
+        const dateStr = d0? d0.toISOString().slice(0,10) : "";
         const amt=Number(r.amount||0);
         const ip=r.installmentPlan;
         const prog = ip ? progressMeta(ip.index||1, ip.count||1) : null;
@@ -225,24 +283,11 @@
           tr.querySelectorAll("[data-field]").forEach(cell=>{
             const f=cell.dataset.field; let v=cell.textContent.trim();
             if(f==="amount") v=Number(v);
-            if(f==="date"){ const d=new Date(v); payload.date=d; payload.month=monthKeyFromDate(d); }
+            if(f==="date"){ const d=new Date(v); if(isFinite(d)) { payload.date=d; payload.month=monthKeyFromDate(d); } }
             else payload[f]=v;
           });
           try{ await updateDoc(doc(db,"transactions",id), payload); showToast("Transacción guardada"); }catch(err){ alert(err.message); }
         });
-      });
-    }
-
-    function renderChart(catAgg){
-      const labels=Object.keys(catAgg), data=Object.values(catAgg);
-      if(catChart) catChart.destroy();
-      catChart=new Chart(catChartCanvas, {
-        type:"bar",
-        data:{ labels, datasets:[{ label:"Gasto por categoría", data }] },
-        options:{
-          responsive:true, plugins:{ legend:{ display:false } },
-          scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>fmt(v) } } }
-        }
       });
     }
 
@@ -253,16 +298,14 @@
       permanents.forEach(p=>{
         const c=document.createElement("div"); c.className="perm-card";
         c.innerHTML=`
-          <div class="section-title"><b>${p.name||"(Sin nombre)"}</b> <span class="badge red">Permanente</span></div>
+          <div class="section-title"><b>${p.name||"(Sin nombre)"} </b><span class="badge red">Permanente</span></div>
           <label>Monto mensual (gasto)
             <input type="number" data-f="amount" value="${Math.abs(Number(p.amount)||0)}">
           </label>
           <label>Categoría <select data-f="category"></select></label>
-          <label>Pagador <select data-f="payer"></select></label>
           <div class="row"><button class="mini" data-action="save" data-id="${p._id}">Guardar</button><button class="mini danger" data-action="delete" data-id="${p._id}">Eliminar</button></div>`;
-        const catSel=c.querySelector('select[data-f="category"]'); const paySel=c.querySelector('select[data-f="payer"]');
-        fillSelect(catSel, CATS); fillSelect(paySel, PAYERS);
-        if(p.category) catSel.value=p.category; if(p.payer) paySel.value=p.payer;
+        const catSel=c.querySelector('select[data-f="category"]'); fillSelect(catSel, CATS);
+        if(p.category) catSel.value=p.category;
         grid.appendChild(c);
       }); permList.appendChild(grid);
 
@@ -271,8 +314,7 @@
           const id=btn.getAttribute("data-id"); const root=btn.closest(".perm-card");
           const amount=-Math.abs(Number(root.querySelector('input[data-f="amount"]').value||0));
           const category=root.querySelector('select[data-f="category"]').value;
-          const payer=root.querySelector('select[data-f="payer"]').value;
-          try{ await updateDoc(doc(db,"permanents",id), {amount,category,payer}); showToast("Permanente guardado"); }catch(e){ alert(e.message); }
+          try{ await updateDoc(doc(db,"permanents",id), {amount,category}); showToast("Permanente guardado"); }catch(e){ alert(e.message); }
         });
       });
       permList.querySelectorAll("button[data-action='delete']").forEach(btn=>{
@@ -316,46 +358,6 @@
       });
     }
 
-    function renderSummaries(){
-      const selKey=monthSelect.value, monthDate=firstDayOfMonthKey(selKey);
-      const permRows = permanents.map(p=>({ ...p, _synthetic:true, date:monthDate, month:selKey, amount:Number(p.amount),
-        category:p.category||"Otros", payee:p.name||"Gasto Permanente", notes:"(permanente)" }));
-      const salRows = salaries.map(p=>({ ...p, _synthetic:true, date:monthDate, month:selKey, amount:Math.abs(Number(p.amount)),
-        category:"Sueldo", payee:p.name||"Sueldo", notes:"(sueldo)", payer:p.payer }));
-
-      const rows = [...txRows, ...permRows, ...salRows];
-
-      const group = (arr, payer, cuotas) => arr.filter(r=>r.payer===payer && (!!r.installmentPlan===cuotas));
-      const migNo = group(rows,"Miguelito",false), migYes = group(rows,"Miguelito",true);
-      const josNo = group(rows,"Josefita",false), josYes = group(rows,"Josefita",true);
-
-      renderSimpleTable(document.getElementById("sum-mig-no"), migNo, "Miguelito · Sin cuotas (incluye permanentes/sueldos)");
-      renderSimpleTable(document.getElementById("sum-mig-yes"), migYes, "Miguelito · Con cuotas", true);
-      renderMini(document.getElementById("sum-mig-mini"), migNo, migYes, "Miguelito");
-
-      renderSimpleTable(document.getElementById("sum-jos-no"), josNo, "Josefita · Sin cuotas (incluye permanentes/sueldos)");
-      renderSimpleTable(document.getElementById("sum-jos-yes"), josYes, "Josefita · Con cuotas", true);
-      renderMini(document.getElementById("sum-jos-mini"), josNo, josYes, "Josefita");
-
-      const tot = (a)=>a.reduce((s,x)=>s+Number(x.amount||0),0);
-      const incomes = rows.filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
-      const expenses = rows.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
-      const balance = incomes-expenses;
-      const migTot = tot(migNo)+tot(migYes), josTot = tot(josNo)+tot(josYes);
-
-      document.getElementById("global-summary").innerHTML=`
-        <table>
-          <thead class="sticky-head"><tr><th>Resumen Global</th><th>Monto</th></tr></thead>
-          <tbody>
-            <tr><td>Ingresos (incluye sueldos)</td><td class="pos">${fmt(incomes)}</td></tr>
-            <tr><td>Gastos (incluye permanentes)</td><td class="neg">${fmt(-expenses)}</td></tr>
-            <tr><td><b>Balance</b></td><td><b>${fmt(balance)}</b></td></tr>
-            <tr><td><span class="badge blue">Miguelito</span> Total</td><td>${fmt(migTot)}</td></tr>
-            <tr><td><span class="badge amber">Josefita</span> Total</td><td>${fmt(josTot)}</td></tr>
-          </tbody>
-        </table>`;
-    }
-
     function rowInstallmentDecor(r){
       const ip=r.installmentPlan; if(!ip) return "";
       const {pct,tone}=progressMeta(ip.index||1, ip.count||1);
@@ -377,8 +379,7 @@
               <thead class="sticky-head"><tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Notas</th></tr></thead>
               <tbody>
                 ${rows.map(r=>{
-                  const d=r.date?.toDate?.()? r.date.toDate(): (r.date instanceof Date? r.date : null);
-                  const ds=d? d.toISOString().slice(0,10) : "";
+                  const d=safeDate(r.date); const ds=d? d.toISOString().slice(0,10) : "";
                   const amt=Number(r.amount||0);
                   const deco = decorateCuotas ? rowInstallmentDecor(r) : "";
                   return `<tr>
@@ -396,6 +397,74 @@
         </details>`;
     }
 
+    function renderPermanentsSummary(container, permRows){
+      const tot = permRows.reduce((s,x)=>s+Number(x.amount||0),0);
+      container.innerHTML = `
+        <details open>
+          <summary>Permanentes (mes) — <span class="badge red">Total: ${fmt(tot)}</span></summary>
+          <div class="table-wrap">
+            <table>
+              <thead class="sticky-head"><tr><th>Nombre</th><th>Categoría</th><th>Monto</th></tr></thead>
+              <tbody>
+                ${permRows.map(p=>`
+                  <tr><td>${p.payee||"Permanente"}</td><td>${p.category||"Otros"}</td><td class="neg">${fmt(p.amount)}</td></tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+    }
+
+    function renderSummaries(){
+      const selKey=monthSelect.value, monthDate=firstDayOfMonthKey(selKey);
+
+      // Synthetic permanents (negative) & salaries (positive)
+      const permRows = permanents.map(p=>({
+        _synthetic:true, date:monthDate, month:selKey,
+        amount:Number(p.amount)||0, category:p.category||"Otros", payee:p.name||"Gasto Permanente"
+      }));
+      const salRows = salaries.map(p=>({
+        _synthetic:true, date:monthDate, month:selKey,
+        amount:Math.abs(Number(p.amount)||0), category:"Sueldo", payee:p.name||"Sueldo", payer:p.payer
+      }));
+
+      // Per-person rows EXCLUDE permanents
+      const rowsForPeople = [...txRows, ...salRows];
+      const group = (arr, payer, cuotas) => arr.filter(r=>r.payer===payer && (!!r.installmentPlan===cuotas));
+      const migNo = group(rowsForPeople,"Miguelito",false), migYes = group(rowsForPeople,"Miguelito",true);
+      const josNo = group(rowsForPeople,"Josefita",false), josYes = group(rowsForPeople,"Josefita",true);
+
+      renderSimpleTable(sumMigNo, migNo, "Miguelito · Sin cuotas (excluye permanentes)");
+      renderSimpleTable(sumMigYes, migYes, "Miguelito · Con cuotas", true);
+      renderPermanentsSummary(sumPermA, permRows);
+      renderMini(sumMigMini, migNo, migYes, "Miguelito");
+
+      renderSimpleTable(sumJosNo, josNo, "Josefita · Sin cuotas (excluye permanentes)");
+      renderSimpleTable(sumJosYes, josYes, "Josefita · Con cuotas", true);
+      renderPermanentsSummary(sumPermB, permRows);
+      renderMini(sumJosMini, josNo, josYes, "Josefita");
+
+      // Global summary INCLUDES permanents
+      const tot = (a)=>a.reduce((s,x)=>s+Number(x.amount||0),0);
+      const incomes = [...txRows, ...salRows].filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
+      const expensesTx = txRows.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+      const expensesPerm = permRows.reduce((s,x)=>s+Math.abs(Number(x.amount||0)),0);
+      const expensesAll = expensesTx + expensesPerm;
+      const balance = incomes - expensesAll;
+
+      document.getElementById("global-summary").innerHTML=`
+        <table>
+          <thead class="sticky-head"><tr><th>Resumen Global</th><th>Monto</th></tr></thead>
+          <tbody>
+            <tr><td>Ingresos (incluye sueldos)</td><td class="pos">${fmt(incomes)}</td></tr>
+            <tr><td>Gastos (solo transacciones)</td><td class="neg">${fmt(-expensesTx)}</td></tr>
+            <tr><td>Permanentes (mes)</td><td class="neg">${fmt(-expensesPerm)}</td></tr>
+            <tr><td><b>Balance</b></td><td><b>${fmt(balance)}</b></td></tr>
+          </tbody>
+        </table>`;
+    }
+
     function renderMini(container, noArr, yesArr, who){
       const sum = (xs)=>xs.reduce((s,x)=>s+Number(x.amount||0),0);
       const no=sum(noArr), yes=sum(yesArr), all=no+yes;
@@ -411,7 +480,10 @@
     /* === Finance read-only savings === */
     function renderFinanceSavings(){
       const key=monthSelect.value;
-      const monthOnly = savings.filter(s=> monthKeyFromDate(s.date?.toDate?.()? s.date.toDate() : s.date)===key);
+      const monthOnly = savings.filter(s=>{
+        const d=safeDate(s.date); if(!d) return false;
+        return monthKeyFromDate(d)===key;
+      });
       const sum=(w)=>monthOnly.filter(x=>x.owner===w).reduce((s,x)=>s+Number(x.amount||0),0);
       const mig=sum("Miguelito"), jos=sum("Josefita"), con=sum("Conjunto"), total=mig+jos+con;
       financeSavings.innerHTML=`
@@ -481,12 +553,12 @@
     });
 
     /* === Permanentes / Sueldos adds === */
-    permAddBtn.addEventListener("click", async ()=>{
+    document.getElementById("perm-add").addEventListener("click", async ()=>{
       const name=permName.value.trim(); const amt=Number(permAmount.value);
       if(!name || isNaN(amt)) return alert("Nombre y monto requeridos");
       try{
         await addDoc(collection(db,"permanents"), { uid:currentUser.uid, name, amount:-Math.abs(amt),
-          category:permCategory.value||"Otros", payer:permPayer.value||"Miguelito", createdAt:serverTimestamp() });
+          category:permCategory.value||"Otros", createdAt:serverTimestamp() });
         permName.value=""; permAmount.value=""; showToast("Permanente agregado");
       }catch(e){ alert(e.message); }
     });
@@ -500,28 +572,24 @@
     });
 
     /* === Savings tab === */
-    savForm.addEventListener("submit", async (e)=>{
+    document.getElementById("sav-form").addEventListener("submit", async (e)=>{
       e.preventDefault();
       const owner=savOwner.value, type=savType.value;
       const amount=Number(savAmount.value); const date=new Date(savDate.value);
-      if(isNaN(amount)||!date) return alert("Monto/Fecha inválidos");
+      if(isNaN(amount)||!isFinite(date)) return alert("Monto/Fecha inválidos");
       try{
         await addDoc(collection(db,"savings"), { uid:currentUser.uid, owner, type, amount, date, month:monthKeyFromDate(date), createdAt:serverTimestamp() });
         showToast("Ahorro registrado"); savAmount.value=""; savDate.value="";
       }catch(e2){ alert(e2.message); }
     });
     function renderSavingsTab(){
-      const rows=[...savings].sort((a,b)=>{
-        const da=a.date?.toDate?.()?a.date.toDate():new Date(a.date);
-        const db=b.date?.toDate?.()?b.date.toDate():new Date(b.date);
-        return db-da;
-      });
+      const rows=[...savings].filter(r=>safeDate(r.date)).sort((a,b)=> safeDate(b.date)-safeDate(a.date) );
       savTable.innerHTML=`
         <div class="table-wrap"><table>
           <thead class="sticky-head"><tr><th>Fecha</th><th>Dueño</th><th>Tipo</th><th>Monto</th></tr></thead>
           <tbody>${rows.map(r=>{
-            const d=r.date?.toDate?.()? r.date.toDate(): new Date(r.date);
-            const ds=d.toISOString().slice(0,10); const amt=Number(r.amount||0);
+            const d=safeDate(r.date); const ds=d? d.toISOString().slice(0,10) : "";
+            const amt=Number(r.amount||0);
             return `<tr><td>${ds}</td><td>${r.owner}</td><td>${r.type}</td><td class="${amt<0?'neg':'pos'}">${fmt(amt)}</td></tr>`;
           }).join("")}</tbody></table></div>`;
       const sum=(w)=>rows.filter(x=>x.owner===w).reduce((s,x)=>s+Number(x.amount||0),0);
@@ -535,78 +603,97 @@
         </div>`;
     }
 
-    /* === Monthly summary (last 3 months) === */
+    /* === Monthly summary (last 3 months, robust + includes permanents/salaries) === */
     async function renderMonthlySummary(){
       if(!currentUser) return;
-      // Pull last ~120 days of tx for simplicity
-      const now=new Date(), back=new Date(); back.setMonth(now.getMonth()-3);
-      const qs=await getDocs(query(collection(db,"transactions"), where("uid","==",currentUser.uid)));
-      const all=[]; qs.forEach(d=>{ const x=d.data(); const dt=x.date?.toDate?.()?x.date.toDate():new Date(x.date); if(dt>=back) all.push({...x, _id:d.id, _dt:dt}); });
-      // Bucket by month key
-      const months={}; all.forEach(x=>{ const k=monthKeyFromDate(x._dt); (months[k]=months[k]||[]).push(x); });
-      const keys=Object.keys(months).sort().slice(-3); // last 3 chronological
-      // Category sums + top contributors
-      monWrap.innerHTML="";
-      monTop.innerHTML="";
-      monStats.innerHTML="";
-      const statCards=[];
-      keys.forEach(key=>{
-        const arr=months[key];
-        const byCat={}; arr.forEach(r=>{ const c=r.category||"Otros"; byCat[c]=(byCat[c]||0)+Number(r.amount||0); });
-        const catHtml = Object.entries(byCat)
-          .sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]))
-          .map(([c,v])=>`<li><span>${c}</span><strong>${fmt(v)}</strong></li>`).join("");
-        // Top expenses (largest negative amounts)
-        const top = [...arr].sort((a,b)=>Math.abs(Number(b.amount||0))-Math.abs(Number(a.amount||0))).slice(0,3);
-        const topHtml = top.map(r=>{
-          const amt=Number(r.amount||0), dt=r._dt.toISOString().slice(0,10);
-          const ip=r.installmentPlan; const deco= ip? ` · cuota ${ip.index}/${ip.count}`:"";
-          return `<li><span>${dt} · ${r.payee||"(sin descripción)"}${deco}</span><strong class="${amt<0?'neg':'pos'}">${fmt(amt)}</strong></li>`;
-        }).join("");
+      try{
+        const now=new Date();
+        // Build target month keys: this month and previous 2
+        const keys=[0,1,2].map(i=> monthKeyFromDate(new Date(now.getFullYear(), now.getMonth()-i, 1)) ).reverse();
 
-        const card=document.createElement("div"); card.className="card";
-        card.innerHTML=`
-          <h3>${key} <span class="badge blue">Resumen mensual</span></h3>
-          <div class="split">
-            <div>
-              <h4>Categorías (top)</h4>
-              <ul class="toplist">${catHtml||"<li class='subtle'>Sin datos</li>"}</ul>
-            </div>
-            <div>
-              <h4>Destacados (más costosos)</h4>
-              <ul class="toplist">${topHtml||"<li class='subtle'>Sin datos</li>"}</ul>
-            </div>
-          </div>`;
-        monWrap.appendChild(card);
+        // Fetch all transactions (then filter by month key)
+        const qs=await getDocs(query(collection(db,"transactions"), where("uid","==",currentUser.uid)));
+        const txAll=[]; qs.forEach(d=>{
+          const x=d.data(); const dt=safeDate(x.date); if(!dt) return;
+          txAll.push({...x, _id:d.id, _dt:dt, _key:monthKeyFromDate(dt)});
+        });
 
-        // stats
-        const inc = arr.filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
-        const exp = arr.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
-        statCards.push({inc,exp});
-      });
+        monWrap.innerHTML=""; monStats.innerHTML="";
+        const statCards=[];
 
-      // averages over available months
-      if(statCards.length){
-        const avgInc = statCards.reduce((s,x)=>s+x.inc,0)/statCards.length;
-        const avgExp = statCards.reduce((s,x)=>s+x.exp,0)/statCards.length;
-        const avgBal = avgInc-avgExp;
-        monStats.innerHTML=`
-          <div class="stat-grid">
-            <div class="card"><h3>Promedio Ingresos (3 meses)</h3><div class="kpi-value">${fmt(avgInc)}</div></div>
-            <div class="card"><h3>Promedio Gastos (3 meses)</h3><div class="kpi-value">${fmt(-avgExp)}</div></div>
-            <div class="card"><h3>Promedio Balance (3 meses)</h3><div class="kpi-value">${fmt(avgBal)}</div></div>
-          </div>`;
+        keys.forEach(key=>{
+          // transactions for this key
+          const arr=txAll.filter(x=>x._key===key);
+          // add synthetic permanents + salaries for this key
+          const mDate=firstDayOfMonthKey(key);
+          const permRows = permanents.map(p=>({ amount:Number(p.amount)||0, category:p.category||"Otros", payee:p.name||"Permanente", _dt:mDate }));
+          const salRows  = salaries.map(p=>({ amount:Math.abs(Number(p.amount)||0), category:"Sueldo", payee:p.name||"Sueldo", _dt:mDate }));
+          const full = [...arr, ...permRows, ...salRows];
+
+          // Category sums
+          const byCat={};
+          full.forEach(r=>{
+            const c=r.category||"Otros"; const a=Number(r.amount)||0;
+            byCat[c]=(byCat[c]||0)+a;
+          });
+          const catHtml = Object.entries(byCat)
+            .sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]))
+            .map(([c,v])=>`<li><span>${c}</span><strong>${fmt(v)}</strong></li>`).join("");
+
+          // Top expenses (largest negatives)
+          const top = [...full].filter(r=>Number(r.amount)<0)
+            .sort((a,b)=>Math.abs(Number(b.amount))-Math.abs(Number(a.amount))).slice(0,3);
+          const topHtml = top.map(r=>{
+            const d = r._dt ? r._dt : safeDate(r.date);
+            const ds = d? d.toISOString().slice(0,10) : "";
+            // Try to show installment badge if present (only exists on tx docs)
+            const src = (r.installmentPlan && r.installmentPlan.count) ? ` · cuota ${r.installmentPlan.index}/${r.installmentPlan.count}` : "";
+            return `<li><span>${ds} · ${r.payee||"(sin descripción)"}${src}</span><strong class="neg">${fmt(r.amount)}</strong></li>`;
+          }).join("");
+
+          const card=document.createElement("div"); card.className="card";
+          card.innerHTML=`
+            <h3>${key} <span class="badge blue">Resumen mensual</span></h3>
+            <div class="split">
+              <div>
+                <h4>Categorías (top)</h4>
+                <ul class="toplist">${catHtml||"<li class='subtle'>Sin datos</li>"}</ul>
+              </div>
+              <div>
+                <h4>Destacados (más costosos)</h4>
+                <ul class="toplist">${topHtml||"<li class='subtle'>Sin datos</li>"}</ul>
+              </div>
+            </div>`;
+          monWrap.appendChild(card);
+
+          // stats
+          const inc = full.filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
+          const exp = full.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+          statCards.push({inc,exp});
+        });
+
+        if(statCards.length){
+          const avgInc = statCards.reduce((s,x)=>s+x.inc,0)/statCards.length;
+          const avgExp = statCards.reduce((s,x)=>s+x.exp,0)/statCards.length;
+          const avgBal = avgInc-avgExp;
+          monStats.innerHTML=`
+            <div class="stat-grid">
+              <div class="card"><h3>Promedio Ingresos (3 meses)</h3><div class="kpi-value">${fmt(avgInc)}</div></div>
+              <div class="card"><h3>Promedio Gastos (3 meses)</h3><div class="kpi-value">${fmt(-avgExp)}</div></div>
+              <div class="card"><h3>Promedio Balance (3 meses)</h3><div class="kpi-value">${fmt(avgBal)}</div></div>
+            </div>`;
+        }
+      }catch(err){
+        console.error(err);
+        monWrap.innerHTML = `<p class="subtle">No se pudo generar el resumen mensual.</p>`;
       }
     }
 
     /* === Installments analysis === */
     function renderInstallmentAnalysis(){
-      // Group current and historical (last 12 months for scope) plans by planId
-      const oneYearBack=new Date(); oneYearBack.setFullYear(oneYearBack.getFullYear()-1);
-      const rows=[...txRows]; // current month only; for deeper, you can fetch more if desired
-      // Also include current month permanents/salaries? Not necessary for installments analysis
+      // Only current month plans shown (keeps query light)
       const plans={};
-      rows.filter(r=>r.installmentPlan).forEach(r=>{
+      txRows.filter(r=>r.installmentPlan).forEach(r=>{
         const pid=r.installmentPlan.planId||`${r.payee||"plan"}`;
         (plans[pid]=plans[pid]||[]).push(r);
       });
@@ -621,12 +708,12 @@
         const idx= last.installmentPlan.index||arr.length;
         const {pct,tone}=progressMeta(idx, count);
         const payer=any.payer||"", account=any.account||"", payee=any.payee||"";
-        const total = count * (Number(any.amount)||0); // approx
+        const per = Number(any.amount)||0;
+        const total = per * count; // approx
         const left = count - idx;
 
         const itemsHtml = arr.map(x=>{
-          const d = x.date?.toDate?.()? x.date.toDate(): new Date(x.date);
-          const ds = d.toISOString().slice(0,10);
+          const d = safeDate(x.date); const ds = d? d.toISOString().slice(0,10):"";
           return `<tr><td>${ds}</td><td>${fmt(x.amount)}</td><td>${x.account||""}</td><td>${x.payer||""}</td></tr>`;
         }).join("");
 
@@ -638,6 +725,8 @@
             <span class="progress"><span style="width:${pct}%"></span></span>
             <span class="badge">Restan ${left}</span>
             <span class="badge">Aprox total ${fmt(total)}</span>
+            <span class="badge">Cuenta ${account||"-"}</span>
+            <span class="badge">Pagador ${payer||"-"}</span>
           </div>
           <div class="table-wrap">
             <table>
@@ -654,7 +743,6 @@
       fillSelect(catSelect, CATS);
       fillSelect(payerSelect, PAYERS);
       fillSelect(permCategory, CATS);
-      fillSelect(permPayer, PAYERS);
       fillSelect(salPayer, PAYERS);
       fillSelect(savOwner, ["Miguelito","Josefita","Conjunto"]);
       fillSelect(savType, SAVING_TYPES);
@@ -809,7 +897,6 @@
               <label style="flex:1">Nombre <input type="text" id="perm-name" placeholder="Arriendo, Internet, etc."></label>
               <label>Monto mensual (gasto) <input type="number" id="perm-amount" placeholder="ej. 350000"></label>
               <label>Categoría <select id="perm-category"></select></label>
-              <label>Pagador <select id="perm-payer"></select></label>
               <button id="perm-add">Agregar permanente</button>
             </div>
           </div>
@@ -837,11 +924,13 @@
               <div>
                 <div id="sum-mig-no" class="details"></div>
                 <div id="sum-mig-yes" class="details" style="margin-top:12px"></div>
+                <div id="sum-perm-a" class="details" style="margin-top:12px"></div>
                 <div id="sum-mig-mini" style="margin-top:12px"></div>
               </div>
               <div>
                 <div id="sum-jos-no" class="details"></div>
                 <div id="sum-jos-yes" class="details" style="margin-top:12px"></div>
+                <div id="sum-perm-b" class="details" style="margin-top:12px"></div>
                 <div id="sum-jos-mini" style="margin-top:12px"></div>
               </div>
             </div>
