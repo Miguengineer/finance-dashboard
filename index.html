@@ -191,7 +191,7 @@
           if(amt>=0) income+=amt; else expense+=Math.abs(amt);
           const c=t.category||"Otros";
           if (amt<0) catAggTx[c]=(catAggTx[c]||0)+Math.abs(amt); // only expense for chart from tx
-        });
+          });
         // Combine with permanents/salaries for KPIs/chart
         renderMonthKpisAndChart(catAggTx);
         renderMainTable(txRows);
@@ -924,8 +924,9 @@ spendPie = new Chart(spendPieCanvas, {
       subTx(); subPerm(); subSal(); subSav(); refreshPlanOptions();
     });
 
-    if(!firebaseConfig || !firebaseConfig.projectId){ authHelp.style.display="block"; }
-  </script>
+      if(!firebaseConfig || !firebaseConfig.projectId){ authHelp.style.display="block"; }
+  }
+    </script>
 </head>
 <body>
   <!-- Toast -->
