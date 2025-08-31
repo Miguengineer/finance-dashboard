@@ -113,6 +113,12 @@
     const sumJosMini = document.getElementById("sum-jos-mini");
     const sumPermB = document.getElementById("sum-perm-b");
 
+    // Pie
+    const spendPieCanvas = document.getElementById("spendPie");
+    let spendPie = null;
+    const existingPlanSelect = document.getElementById("existing-plan-select");
+
+
     // Global
     const globalSummary = document.getElementById("global-summary");
 
@@ -207,41 +213,86 @@
     }
 
     /* === Month KPIs + Chart (now includes permanents & salaries) === */
-    function renderMonthKpisAndChart(existingCatAggTx = {}){
-      // Build synthetic rows for current month
-      const selKey = monthSelect.value;
-      const monthDate = firstDayOfMonthKey(selKey);
-      const permRows = permanents.map(p=>({
-        _synthetic:true, date:monthDate, month:selKey,
-        amount:Number(p.amount)||0, category:p.category||"Otros", payee:p.name||"Permanente"
-      }));
-      const salRows = salaries.map(p=>({
-        _synthetic:true, date:monthDate, month:selKey,
-        amount:Math.abs(Number(p.amount)||0), category:"Sueldo", payee:p.name||"Sueldo", payer:p.payer
-      }));
-      // KPIs: income includes salaries + positive tx; expense includes permanents + negative tx
-      let income=0, expense=0;
-      txRows.forEach(t=>{ const a=Number(t.amount)||0; if(a>=0) income+=a; else expense+=Math.abs(a); });
-      salRows.forEach(s=> income += Number(s.amount)||0);
-      permRows.forEach(p=> expense += Math.abs(Number(p.amount)||0));
-      incomeEl.textContent=fmt(income);
-      expenseEl.textContent=fmt(-expense);
-      totalEl.textContent=fmt(income-expense);
+    function renderMonthKpisAndChart(existingCatAggTx = {}) {
+  const selKey = monthSelect.value;
+  const monthDate = firstDayOfMonthKey(selKey);
 
-      // Chart: show expenses by category including permanents + expense tx
-      const catAgg = {...existingCatAggTx};
-      permRows.forEach(p=>{
-        const cat=p.category||"Otros";
-        catAgg[cat]=(catAgg[cat]||0)+Math.abs(Number(p.amount)||0);
-      });
-      const labels=Object.keys(catAgg), data=Object.values(catAgg);
-      if(catChart) catChart.destroy();
-      catChart=new Chart(catChartCanvas,{
-        type:"bar",
-        data:{ labels, datasets:[{ label:"Gasto por categoría", data }] },
-        options:{ responsive:true, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>fmt(v) } } } }
-      });
-    }
+  // Synthetic permanents (negative) & salaries (positive)
+  const permRows = permanents.map(p=>({
+    amount:Number(p.amount)||0,
+    category:p.category||"Otros", payee:p.name||"Permanente"
+  }));
+  const salRows = salaries.map(p=>({
+    amount:Math.abs(Number(p.amount)||0),
+    category:"Sueldo", payee:p.name||"Sueldo", payer:p.payer
+  }));
+
+  // Savings rows for current month: deposits => OUT (treat as expense), withdrawals => IN
+  const savRows = savings.filter(s=>{
+    const d=safeDate(s.date); return d && monthKeyFromDate(d)===selKey;
+  }).map(s=>{
+    const a = Number(s.amount)||0;
+    return {
+      amount: a, // +deposit/-withdrawal
+      category: "Ahorros",
+      owner: s.owner
+    };
+  });
+
+  // KPIs
+  let income = 0, expense = 0;
+
+  // transactions already signed by type
+  txRows.forEach(t => { const a=Number(t.amount)||0; if(a>=0) income+=a; else expense+=Math.abs(a); });
+  // salaries add to income
+  salRows.forEach(s => income += Number(s.amount)||0);
+  // permanents add to expense
+  permRows.forEach(p => expense += Math.abs(Number(p.amount)||0));
+  // savings: deposits (a>0) are expense; withdrawals (a<0) are income
+  savRows.forEach(s => {
+    const a = Number(s.amount)||0;
+    if (a > 0) expense += a;
+    else if (a < 0) income += Math.abs(a);
+  });
+
+  incomeEl.textContent = fmt(income);
+  expenseEl.textContent = fmt(-expense);
+  totalEl.textContent = fmt(income - expense);
+
+  // Category chart: expense-only, include permanents and savings (deposits)
+  const catAgg = { ...existingCatAggTx }; // tx negatives already added upstream
+  permRows.forEach(p=>{
+    const cat=p.category||"Otros";
+    catAgg[cat]=(catAgg[cat]||0)+Math.abs(Number(p.amount)||0);
+  });
+  savRows.filter(s=>s.amount>0).forEach(s=>{
+    catAgg["Ahorros"]=(catAgg["Ahorros"]||0)+Math.abs(Number(s.amount)||0);
+  });
+
+  const labels = Object.keys(catAgg), data = Object.values(catAgg);
+  if (catChart) catChart.destroy();
+  catChart = new Chart(catChartCanvas,{
+    type:"bar",
+    data:{ labels, datasets:[{ label:"Gasto por categoría", data }] },
+    options:{ responsive:true, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>fmt(v) } } } }
+  });
+
+  // Spend pie: savings, permanentes, Miguelito tx, Josefita tx
+  const txNegMig = txRows.filter(r=>r.payer==="Miguelito" && Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+  const txNegJos = txRows.filter(r=>r.payer==="Josefita" && Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+  const permTot = permRows.reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+  const savDep = savRows.filter(s=>s.amount>0).reduce((s,x)=>s+Number(x.amount),0);
+
+  const pieLabels = ["Ahorros","Permanentes","Miguelito (tx)","Josefita (tx)"];
+  const pieData = [savDep, permTot, txNegMig, txNegJos];
+
+  if (spendPie) spendPie.destroy();
+  spendPie = new Chart(spendPieCanvas, {
+    type:"doughnut",
+    data:{ labels: pieLabels, datasets:[{ data: pieData }] },
+    options:{ responsive:true, plugins:{ legend:{ position: "bottom" } } }
+  });
+}
 
     /* === Render finance === */
     function renderMainTable(rows){
@@ -264,7 +315,6 @@
           <td contenteditable="true" data-field="payee">${r.payee||""}${ipHtml}</td>
           <td contenteditable="true" data-field="category">${r.category||""}</td>
           <td contenteditable="true" data-field="amount" class="${amt<0?'neg':'pos'}">${amt}</td>
-          <td contenteditable="true" data-field="account">${r.account||""}</td>
           <td contenteditable="true" data-field="payer">${r.payer||""}</td>
           <td contenteditable="true" data-field="notes">${r.notes||""}</td>
           <td><button class="mini danger" data-action="delete">Eliminar</button><button class="mini" data-action="save">Guardar</button></td>`;
@@ -376,7 +426,7 @@
           <summary>${title} — <span class="badge">Total: ${fmt(tot)}</span></summary>
           <div class="table-wrap">
             <table>
-              <thead class="sticky-head"><tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Notas</th></tr></thead>
+              <thead class="sticky-head"><tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Notas</th></tr></thead>
               <tbody>
                 ${rows.map(r=>{
                   const d=safeDate(r.date); const ds=d? d.toISOString().slice(0,10) : "";
@@ -447,35 +497,60 @@
 
       // Global summary INCLUDES permanents
       const tot = (a)=>a.reduce((s,x)=>s+Number(x.amount||0),0);
-      const incomes = [...txRows, ...salRows].filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0);
+      const savRowsMonth = savings.filter(s=>{
+        const d=safeDate(s.date); return d && monthKeyFromDate(d)===selKey;
+      });
+      const incomes = [...txRows, ...salRows].filter(r=>Number(r.amount)>=0).reduce((s,x)=>s+Number(x.amount),0) + savAsIncome;
       const expensesTx = txRows.filter(r=>Number(r.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
       const expensesPerm = permRows.reduce((s,x)=>s+Math.abs(Number(x.amount||0)),0);
-      const expensesAll = expensesTx + expensesPerm;
+      const expensesSav = savAsExpense;
+      const expensesAll = expensesTx + expensesPerm + expensesSav;
+      const savAsExpense = savRowsMonth.filter(s=>Number(s.amount)>0).reduce((s,x)=>s+Number(x.amount),0);
+      const savAsIncome = savRowsMonth.filter(s=>Number(s.amount)<0).reduce((s,x)=>s+Math.abs(Number(x.amount)),0);
+
+      
       const balance = incomes - expensesAll;
 
-      document.getElementById("global-summary").innerHTML=`
+      globalSummary.innerHTML=`
         <table>
           <thead class="sticky-head"><tr><th>Resumen Global</th><th>Monto</th></tr></thead>
           <tbody>
-            <tr><td>Ingresos (incluye sueldos)</td><td class="pos">${fmt(incomes)}</td></tr>
-            <tr><td>Gastos (solo transacciones)</td><td class="neg">${fmt(-expensesTx)}</td></tr>
+            <tr><td>Ingresos (incluye sueldos y retiros de ahorro)</td><td class="pos">${fmt(incomes)}</td></tr>
+            <tr><td>Gastos (transacciones)</td><td class="neg">${fmt(-expensesTx)}</td></tr>
             <tr><td>Permanentes (mes)</td><td class="neg">${fmt(-expensesPerm)}</td></tr>
+            <tr><td>Ahorros (depósitos)</td><td class="neg">${fmt(-expensesSav)}</td></tr>
             <tr><td><b>Balance</b></td><td><b>${fmt(balance)}</b></td></tr>
           </tbody>
         </table>`;
-    }
+      }
+
 
     function renderMini(container, noArr, yesArr, who){
-      const sum = (xs)=>xs.reduce((s,x)=>s+Number(x.amount||0),0);
-      const no=sum(noArr), yes=sum(yesArr), all=no+yes;
-      container.innerHTML=`
-        <table><thead class="sticky-head"><tr><th>${who} · Resumen</th><th>Monto</th></tr></thead>
-          <tbody>
-            <tr><td>Sin cuotas</td><td>${fmt(no)}</td></tr>
-            <tr><td>Con cuotas</td><td>${fmt(yes)}</td></tr>
-            <tr><td><b>Total</b></td><td><b>${fmt(all)}</b></td></tr>
-          </tbody></table>`;
-    }
+  const sum = (xs)=>xs.reduce((s,x)=>s+Number(x.amount||0),0);
+  const no = sum(noArr.filter(x=>Number(x.amount)<0)) * -1;      // only expenses from tx
+  const yes = sum(yesArr.filter(x=>Number(x.amount)<0)) * -1;    // only expenses from tx
+  const sal = salaries.filter(s=>s.payer===who).reduce((s,x)=>s+Math.abs(Number(x.amount)||0),0);
+  const sav = savings.filter(s=>{
+    const d=safeDate(s.date); if(!d) return false;
+    return monthKeyFromDate(d)===monthSelect.value && s.owner===who && Number(s.amount)>0; // deposits only
+  }).reduce((s,x)=>s+Number(x.amount),0);
+
+  const totalOut = no + yes + sav;
+  const balance = sal - totalOut;
+
+  container.innerHTML=`
+    <table>
+      <thead class="sticky-head"><tr><th>${who} · Resumen</th><th>Monto</th></tr></thead>
+      <tbody>
+        <tr><td>Sueldos</td><td class="pos">${fmt(sal)}</td></tr>
+        <tr><td>Sin cuotas (gasto)</td><td class="neg">${fmt(-no)}</td></tr>
+        <tr><td>Con cuotas (gasto)</td><td class="neg">${fmt(-yes)}</td></tr>
+        <tr><td>Ahorros (depósitos)</td><td class="neg">${fmt(-sav)}</td></tr>
+        <tr><td><b>Balance</b></td><td><b>${fmt(balance)}</b></td></tr>
+      </tbody>
+    </table>`;
+  }
+
 
     /* === Finance read-only savings === */
     function renderFinanceSavings(){
@@ -505,12 +580,11 @@
       const amount = txType==="Ingreso" ? Math.abs(baseAmountRaw) : -Math.abs(baseAmountRaw);
       const d0=new Date(dateStr);
 
-      const common={
+      const common = {
         uid: currentUser.uid,
         category: fd.get("category") || "Otros",
         payee: fd.get("payee") || "",
         payer: fd.get("payer") || "",
-        account: fd.get("account") || "",
         notes: fd.get("notes") || "",
         createdAt: serverTimestamp()
       };
@@ -684,8 +758,10 @@
             .map(([c,v])=>`<li><span>${c}</span><strong>${fmt(v)}</strong></li>`).join("");
 
           // Top expenses (largest negatives)
-          const top = [...full].filter(r=>Number(r.amount)<0)
-            .sort((a,b)=>Math.abs(Number(b.amount))-Math.abs(Number(a.amount))).slice(0,3);
+          const top = [...arr]                    // only transactions
+          .filter(r => Number(r.amount) < 0)    // expenses
+          .sort((a,b)=>Math.abs(Number(b.amount))-Math.abs(Number(a.amount)))
+          .slice(0,3);
           const topHtml = top.map(r=>{
             const d = r._dt ? r._dt : safeDate(r.date);
             const ds = d? d.toISOString().slice(0,10) : "";
@@ -773,13 +849,41 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead class="sticky-head"><tr><th>Fecha</th><th>Monto</th><th>Cuenta</th><th>Pagador</th></tr></thead>
+              <thead class="sticky-head"><tr><th>Fecha</th><th>Monto</th><th>Pagador</th></tr></thead>
               <tbody>${itemsHtml}</tbody>
             </table>
           </div>`;
         instWrap.appendChild(card);
       });
     }
+
+    async function refreshPlanOptions() {
+      if (!currentUser || !existingPlanSelect) return;
+      existingPlanSelect.innerHTML = "";
+      const seen = new Map(); // planId -> label
+      // You can use current month's txRows; for broader discovery, query all user's tx
+      const qs = await getDocs(query(collection(db,"transactions"), where("uid","==",currentUser.uid)));
+      qs.forEach(d=>{
+        const t=d.data();
+        const ip=t.installmentPlan;
+        if(ip && ip.planId){
+          const label = `${t.payee || "Plan"} · ${ip.index || "?"}/${ip.count || "?"}`;
+          if(!seen.has(ip.planId)) seen.set(ip.planId, label);
+        }
+      });
+      if (seen.size === 0) {
+        const opt=document.createElement("option");
+        opt.value=""; opt.textContent="(No hay planes aún)";
+        existingPlanSelect.appendChild(opt);
+      } else {
+        for (const [pid, label] of seen) {
+          const opt=document.createElement("option");
+          opt.value=pid; opt.textContent=label;
+          existingPlanSelect.appendChild(opt);
+        }
+      }
+    }
+
 
     /* === Init UI === */
     function initSelectors(){
@@ -803,7 +907,7 @@
       show("dashboard");
       document.getElementById("date").valueAsDate=new Date();
       initSelectors(); populateMonths(); activateTab("fin");
-      subTx(); subPerm(); subSal(); subSav();
+      subTx(); subPerm(); subSal(); subSav(); refreshPlanOptions();
     });
 
     if(!firebaseConfig || !firebaseConfig.projectId){ authHelp.style.display="block"; }
@@ -864,6 +968,8 @@
               <div class="kpi"><div class="kpi-label">Balance</div><div id="total" class="kpi-value">—</div></div>
             </div>
             <canvas id="catChart" height="120"></canvas>
+            <canvas id="spendPie" height="120" style="margin-top:12px"></canvas>
+
           </div>
 
           <div class="card">
@@ -917,20 +1023,21 @@
 
                       <!-- Existing plan -->
                       <div id="existing-plan-box" style="display:none">
-                        <label>Plan ID <input type="text" name="plan-id" placeholder="ej. Laptop-2025"></label>
-                        <label>Cuota actual <input type="number" name="plan-index" min="1" value="1"></label>
-                        <label>Total de cuotas <input type="number" name="plan-count" min="1" value="5"></label>
+                      <label>Seleccionar plan
+                        <select name="plan-id" id="existing-plan-select"></select>
+                      </label>
+                      <label>Cuota actual <input type="number" name="plan-index" min="1" value="1"></label>
+                      <label>Total de cuotas <input type="number" name="plan-count" min="1" value="5"></label>
 
-                        <!-- NEW: optional per-installment; falls back to 'Monto' if empty -->
-                        <div id="manual-existing-fields" style="display:none">
-                          <label>Monto de la cuota
-                            <input type="number" name="existing-installment-amount" id="existing-installment-amount" placeholder="si vacío, usa Monto de arriba">
-                          </label>
-                          <p class="hint">En plan existente, si indicas monto de la cuota aquí, se usará éste; si no, usamos el campo Monto principal.</p>
-                        </div>
-
-                        <p class="hint">Se agregará solo la cuota actual al plan existente.</p>
+                      <!-- If manual calc, you can override the cuota amount -->
+                      <div id="manual-existing-fields" style="display:none">
+                        <label>Monto de la cuota
+                          <input type="number" name="existing-installment-amount" id="existing-installment-amount" placeholder="si vacío, usa Monto de arriba">
+                        </label>
                       </div>
+
+                      <p class="hint">Se agregará solo la cuota actual al plan seleccionado.</p>
+                    </div>
                     </div>
 
                 </div>
@@ -942,7 +1049,6 @@
                   <label>Pagador
                     <select id="payer" name="payer"></select>
                   </label>
-                  <label>Cuenta/Tarjeta <input type="text" name="account" placeholder="Visa ****1234"></label>
                   <label>Notas <input type="text" name="notes" placeholder="comentarios"></label>
                 </div>
               </div>
@@ -955,7 +1061,7 @@
             <div class="table-wrap">
               <table>
                 <thead class="sticky-head">
-                  <tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Cuenta</th><th>Pagador</th><th>Notas</th><th>Acciones</th></tr>
+                  <tr><th>Fecha</th><th>Payee</th><th>Categoría</th><th>Monto</th><th>Pagador</th><th>Notas</th><th>Acciones</th></tr>
                 </thead>
                 <tbody id="tx-tbody"></tbody>
               </table>
