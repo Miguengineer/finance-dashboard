@@ -217,7 +217,7 @@
     renderSummaries();           // ← and this (balances)
     renderMonthlySummary();      // ← and this (3-month view)
   });
-}
+  }
 
 
     /* === Month KPIs + Chart (now includes permanents & salaries) === */
@@ -298,7 +298,9 @@ spendPie = new Chart(spendPieCanvas, {
       tooltip:{ callbacks:{ label: (ctx)=> `${ctx.label}: ${fmt(ctx.parsed)}` } }
     }
   }
-});
+  });
+}
+
 
     /* === Render finance === */
     function renderMainTable(rows){
